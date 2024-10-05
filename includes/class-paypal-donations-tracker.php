@@ -69,30 +69,22 @@ class PayPal_Donations_Tracker {
     }
 
     // Method to enqueue PayPal SDK script
-    public function enqueue_paypal_sdk() {
+    // Enqueue PayPal SDK script and ensure it's loaded
+// Method to enqueue PayPal SDK script
+public function enqueue_paypal_sdk() {
     error_log('enqueue_paypal_sdk called.');
 
     $client_id = esc_attr(get_option('paypal_client_id'));
+    $paypal_environment = get_option('paypal_environment', 'sandbox');
+    $paypal_sdk_url = $paypal_environment === 'sandbox' ? 'https://www.sandbox.paypal.com/sdk/js' : 'https://www.paypal.com/sdk/js';
+
     if (!empty($client_id)) {
         wp_enqueue_script(
             'paypal-sdk',
-            'https://www.paypal.com/sdk/js?client-id=' . $client_id . '&currency=USD',
+            $paypal_sdk_url . '?client-id=' . $client_id . '&currency=USD',
             [],
             null,
             true // Ensure the script is loaded in the footer
-        );
-
-        // Custom script to ensure SDK is fully loaded before usage
-        wp_add_inline_script(
-            'paypal-sdk',
-            'document.addEventListener("DOMContentLoaded", function() {
-                var checkPayPal = setInterval(function() {
-                    if (typeof paypal !== "undefined") {
-                        clearInterval(checkPayPal);
-                        // Trigger any PayPal related code here if necessary
-                    }
-                }, 500);
-            });'
         );
 
         error_log('PayPal SDK script enqueued.');
@@ -100,6 +92,10 @@ class PayPal_Donations_Tracker {
         error_log('PayPal Client ID is missing.');
     }
 }
+
+
+
+
 
     // Method to add an admin menu
     public function add_admin_menu() {
@@ -179,6 +175,16 @@ class PayPal_Donations_Tracker {
         register_setting('paypal_donations_tracker', 'paypal_webhook_id');
         register_setting('paypal_donations_tracker', 'paypal_environment', [
             'default' => 'sandbox',
+        ]);
+
+        // Register PayPal fee settings
+        register_setting('paypal_donations_tracker', 'paypal_fee_percentage', [
+        'default' => '2.9',  // Default PayPal fee percentage
+        'sanitize_callback' => 'floatval',
+        ]);
+        register_setting('paypal_donations_tracker', 'paypal_fixed_fee', [
+        'default' => '0.30',  // Default PayPal fixed fee
+        'sanitize_callback' => 'floatval',
         ]);
     }
 
@@ -263,75 +269,77 @@ class PayPal_Donations_Tracker {
         }
     }
 
-    // Method to verify the webhook signature
-    private function verify_webhook_signature($body, $headers) {
-        $paypal_client_id = get_option('paypal_client_id');
-        $paypal_client_secret = get_option('paypal_client_secret');
-        $paypal_webhook_id = get_option('paypal_webhook_id');
+// Method to verify the webhook signature
+private function verify_webhook_signature($body, $headers) {
+    $paypal_client_id = get_option('paypal_client_id');
+    $paypal_client_secret = get_option('paypal_client_secret');
+    $paypal_webhook_id = get_option('paypal_webhook_id');
 
-        // Check if necessary options are set
-        if (empty($paypal_client_id) || empty($paypal_client_secret) || empty($paypal_webhook_id)) {
-            error_log('PayPal API credentials are not set.');
-            return false;
-        }
-
-        // Determine the PayPal environment
-        $environment = get_option('paypal_environment', 'sandbox');
-        $endpoint = 'https://api.paypal.com/v1/notifications/verify-webhook-signature';
-        if ($environment === 'sandbox') {
-            $endpoint = 'https://api.sandbox.paypal.com/v1/notifications/verify-webhook-signature';
-        }
-
-        // Get access token
-        $access_token = $this->get_paypal_access_token($paypal_client_id, $paypal_client_secret, $environment);
-        if (!$access_token) {
-            error_log('Failed to obtain PayPal access token.');
-            return false;
-        }
-
-        // Correctly access headers
-        $signatureVerificationData = [
-            'auth_algo' => isset($headers['paypal_auth_algo'][0]) ? $headers['paypal_auth_algo'][0] : '',
-            'cert_url' => isset($headers['paypal_cert_url'][0]) ? $headers['paypal_cert_url'][0] : '',
-            'transmission_id' => isset($headers['paypal_transmission_id'][0]) ? $headers['paypal_transmission_id'][0] : '',
-            'transmission_sig' => isset($headers['paypal_transmission_sig'][0]) ? $headers['paypal_transmission_sig'][0] : '',
-            'transmission_time' => isset($headers['paypal_transmission_time'][0]) ? $headers['paypal_transmission_time'][0] : '',
-            'webhook_id' => $paypal_webhook_id,
-            'webhook_event' => json_decode($body, true),
-        ];
-
-        // Check for missing headers
-        foreach ($signatureVerificationData as $key => $value) {
-            if (empty($value) && $key !== 'webhook_event' && $key !== 'webhook_id') {
-                error_log("Missing header or value for: $key");
-                return false;
-            }
-        }
-
-        $args = [
-            'body' => json_encode($signatureVerificationData),
-            'headers' => [
-                'Content-Type' => 'application/json',
-                'Authorization' => 'Bearer ' . $access_token,
-            ],
-            'method' => 'POST',
-            'timeout' => 30,
-        ];
-
-        $response = wp_remote_post($endpoint, $args);
-        if (is_wp_error($response)) {
-            error_log('Webhook signature verification failed: ' . $response->get_error_message());
-            return false;
-        }
-
-        $response_body = wp_remote_retrieve_body($response);
-        $verificationResult = json_decode($response_body, true);
-
-        $verification_status = isset($verificationResult['verification_status']) ? $verificationResult['verification_status'] : 'FAILURE';
-        error_log('Verification Status: ' . $verification_status);
-
-        return $verification_status === 'SUCCESS';
+    // Check if necessary options are set
+    if (empty($paypal_client_id) || empty($paypal_client_secret) || empty($paypal_webhook_id)) {
+        error_log('PayPal API credentials are not set.');
+        return false;
     }
+
+    // Determine the PayPal environment
+    $environment = get_option('paypal_environment', 'sandbox');
+    $endpoint = 'https://api.paypal.com/v1/notifications/verify-webhook-signature';
+    if ($environment === 'sandbox') {
+        $endpoint = 'https://api.sandbox.paypal.com/v1/notifications/verify-webhook-signature';
+    }
+
+    // Get access token
+    $access_token = $this->get_paypal_access_token($paypal_client_id, $paypal_client_secret, $environment);
+    if (!$access_token) {
+        error_log('Failed to obtain PayPal access token.');
+        return false;
+    }
+
+    // Correctly access headers (normalize header names)
+    $headers = array_change_key_case($headers, CASE_UPPER);
+    $signatureVerificationData = [
+        'auth_algo' => isset($headers['PAYPAL-AUTH-ALGO'][0]) ? $headers['PAYPAL-AUTH-ALGO'][0] : '',
+        'cert_url' => isset($headers['PAYPAL-CERT-URL'][0]) ? $headers['PAYPAL-CERT-URL'][0] : '',
+        'transmission_id' => isset($headers['PAYPAL-TRANSMISSION-ID'][0]) ? $headers['PAYPAL-TRANSMISSION-ID'][0] : '',
+        'transmission_sig' => isset($headers['PAYPAL-TRANSMISSION-SIG'][0]) ? $headers['PAYPAL-TRANSMISSION-SIG'][0] : '',
+        'transmission_time' => isset($headers['PAYPAL-TRANSMISSION-TIME'][0]) ? $headers['PAYPAL-TRANSMISSION-TIME'][0] : '',
+        'webhook_id' => $paypal_webhook_id,
+        'webhook_event' => json_decode($body, true),
+    ];
+
+    // Check for missing headers
+    foreach ($signatureVerificationData as $key => $value) {
+        if (empty($value) && $key !== 'webhook_event' && $key !== 'webhook_id') {
+            error_log("Missing header or value for: $key");
+            return false;
+        }
+    }
+
+    $args = [
+        'body' => json_encode($signatureVerificationData),
+        'headers' => [
+            'Content-Type' => 'application/json',
+            'Authorization' => 'Bearer ' . $access_token,
+        ],
+        'method' => 'POST',
+        'timeout' => 30,
+    ];
+
+    $response = wp_remote_post($endpoint, $args);
+    if (is_wp_error($response)) {
+        error_log('Webhook signature verification failed: ' . $response->get_error_message());
+        return false;
+    }
+
+    $response_body = wp_remote_retrieve_body($response);
+    $verificationResult = json_decode($response_body, true);
+
+    $verification_status = isset($verificationResult['verification_status']) ? $verificationResult['verification_status'] : 'FAILURE';
+    error_log('Verification Status: ' . $verification_status);
+
+    return $verification_status === 'SUCCESS';
+}
+
 
     // Method to get PayPal access token
     private function get_paypal_access_token($client_id, $client_secret, $environment) {
@@ -417,6 +425,20 @@ class PayPal_Donations_Tracker {
                         <td><input type="text" id="paypal_webhook_id" name="paypal_webhook_id" value="<?php echo esc_attr(get_option('paypal_webhook_id')); ?>" placeholder="Ingrese su Webhook ID de PayPal" class="donations-module-regular-text" /></td>
                     </tr>
                 </table>
+                <!-- PayPal Fee Settings Section -->
+<h2 class="donations-module-title">PayPal Fee Configuration</h2>
+<hr class="donations-module-separator" />
+<table class="donations-module-form-table">
+    <tr valign="top">
+        <th scope="row"><label for="paypal_fee_percentage">PayPal Fee Percentage (%)</label></th>
+        <td><input type="number" id="paypal_fee_percentage" name="paypal_fee_percentage" value="<?php echo esc_attr(get_option('paypal_fee_percentage', '2.9')); ?>" step="0.01" /></td>
+    </tr>
+    <tr valign="top">
+        <th scope="row"><label for="paypal_fixed_fee">PayPal Fixed Fee (USD)</label></th>
+        <td><input type="number" id="paypal_fixed_fee" name="paypal_fixed_fee" value="<?php echo esc_attr(get_option('paypal_fixed_fee', '0.30')); ?>" step="0.01" /></td>
+    </tr>
+</table>
+
 
                 <!-- Display Settings Section -->
                 <h2 class="donations-module-title">Configuración de Pantalla</h2>
@@ -683,85 +705,197 @@ class PayPal_Donations_Tracker {
     }
 
     // Method to handle the donation form shortcode
-    public function donations_form_shortcode() {
-    $progress_data = $this->get_progress_bar_data();
+// Method to handle the donation form shortcode
+// Method to handle the donation form shortcode
+public function donations_form_shortcode() {
+    // Enqueue PayPal SDK script
+    $client_id = esc_attr(get_option('paypal_client_id'));
+    $paypal_environment = get_option('paypal_environment', 'sandbox');
+    $paypal_sdk_url = $paypal_environment === 'sandbox' ? 'https://www.sandbox.paypal.com/sdk/js' : 'https://www.paypal.com/sdk/js';
 
-    $progress_bar_color = esc_attr(get_option('progress_bar_color', '#00ff00'));
-    $progress_bar_height = intval(get_option('progress_bar_height', 20));
-    $progress_bar_well_color = esc_attr(get_option('progress_bar_well_color', '#eeeeee'));
-    $progress_bar_well_width = intval(get_option('progress_bar_well_width', 100));
-    $progress_bar_border_radius = intval(get_option('progress_bar_border_radius', 0));
-    $text_color = esc_attr(get_option('donations_text_color', '#333333'));
+    if (!empty($client_id)) {
+        wp_enqueue_script(
+            'paypal-sdk',
+            $paypal_sdk_url . '?client-id=' . $client_id . '&currency=USD',
+            [],
+            null,
+            true // Ensure the script is loaded in the footer
+        );
+    }
 
+    // Enqueue jQuery
+    wp_enqueue_script('jquery');
+
+    // Register and enqueue custom script with dependencies
+    wp_register_script(
+        'paypal-donations-script',
+        '', // No src since we'll add inline script
+        ['jquery', 'paypal-sdk'],
+        null,
+        true
+    );
+
+    // The updated JavaScript code
+    $custom_js = '
+    (function($) {
+        // Handle donation amount button clicks
+        $(".donation-amount").on("click", function() {
+            $(".donation-amount").removeClass("selected");
+            $(this).addClass("selected");
+            const selectedAmount = $(this).val();
+            $("#custom-amount-field").toggle(selectedAmount === "Other");
+            calculateFees();  // Recalculate fees when amount changes
+        });
+
+        // Custom amount input handler
+        $("#custom-amount").on("input", function() {
+            calculateFees();  // Recalculate fees when custom amount is entered
+        });
+
+        // Checkbox for covering fees
+        $("#cover-fees").on("change", function() {
+            calculateFees();  // Recalculate fees when checkbox is toggled
+        });
+
+        // Function to calculate and display fees
+        function calculateFees() {
+            let selectedAmount = $(".donation-amount.selected").val();
+            if (selectedAmount === "Other") {
+                selectedAmount = $("#custom-amount").val();
+            }
+
+            selectedAmount = parseFloat(selectedAmount);  // Ensure it\'s a number
+
+            const feePercentage = parseFloat("' . esc_attr(get_option('paypal_fee_percentage', 2.9)) . '");
+            const fixedFee = parseFloat("' . esc_attr(get_option('paypal_fixed_fee', 0.30)) . '");
+
+            if (!selectedAmount || isNaN(selectedAmount)) {
+                $("#cover-fees-label").text("Add $0.00 USD to help cover the fees.");
+                return;  // Exit if no valid amount
+            }
+
+            let fee = (selectedAmount * feePercentage / 100) + fixedFee;
+            fee = fee.toFixed(2);
+            $("#cover-fees-label").text("Add $" + fee + " USD to help cover the fees.");
+        }
+
+        // Initialize fee calculation on page load
+        $(document).ready(function() {
+            calculateFees();
+        });
+
+        // PayPal button rendering
+        paypal.Buttons({
+            createOrder: function(data, actions) {
+                let selectedButton = $(".donation-amount.selected");
+                let donationAmount = selectedButton.val();
+
+                if (donationAmount === "Other") {
+                    donationAmount = $("#custom-amount").val();
+                }
+
+                let coverFees = $("#cover-fees").is(":checked");
+
+                if (!donationAmount || isNaN(parseFloat(donationAmount))) {
+                    alert("Please select or enter a valid donation amount.");
+                    return;
+                }
+
+                let feePercentage = parseFloat("' . esc_attr(get_option('paypal_fee_percentage', 2.9)) . '");
+                let fixedFee = parseFloat("' . esc_attr(get_option('paypal_fixed_fee', 0.30)) . '");
+                let fee = (donationAmount * feePercentage / 100) + fixedFee;
+                let totalAmount = coverFees ? (parseFloat(donationAmount) + parseFloat(fee)).toFixed(2) : parseFloat(donationAmount).toFixed(2);
+
+                return actions.order.create({
+                    purchase_units: [{
+                        amount: {
+                            value: totalAmount
+                        }
+                    }]
+                });
+            },
+            onApprove: function(data, actions) {
+                return actions.order.capture().then(function(details) {
+                    // Make AJAX call to save the donation
+                    $.post("' . admin_url('admin-ajax.php') . '", {
+                        action: "save_donation",
+                        donation_nonce: "' . wp_create_nonce('save_donation') . '",
+                        transaction_id: details.id,
+                        donation_amount: details.purchase_units[0].amount.value
+                    }, function(response) {
+                        if (response.success) {
+                            alert("Thank you for your donation!");
+                        } else {
+                            alert("There was a problem saving your donation.");
+                        }
+                    });
+                });
+            }
+        }).render("#paypal-button-container");
+
+    })(jQuery);
+    ';
+
+    wp_add_inline_script('paypal-donations-script', $custom_js);
+    wp_enqueue_script('paypal-donations-script');
+
+    // Existing styling and progress display (leave unchanged)
     ob_start();
     ?>
-    <div class="donations-module-wrapper" style="text-align: left; color: <?php echo $text_color; ?>; padding: 20px 0;">
-        <div>Total Recaudado: <strong><?php echo '$' . number_format($progress_data['current_total'], 2); ?></strong></div>
-        <div>Meta Alcanzada: <strong><?php echo number_format($progress_data['progress'], 2); ?>%</strong></div>
-        <div id="donation-progress" class="donations-progress-wrapper" style="background-color: <?php echo esc_attr($progress_bar_well_color); ?>; width: 100%; height: <?php echo esc_attr($progress_bar_height); ?>px; border-radius: <?php echo esc_attr($progress_bar_border_radius); ?>px; overflow: hidden;">
-            <div id="progress-bar" class="donations-progress-bar" style="background-color: <?php echo esc_attr($progress_bar_color); ?>; height: 100%; width: <?php echo $progress_data['progress']; ?>%;"></div>
-        </div>
-        <p id="donation-summary" style="margin-top: 5px; text-align: left;"><?php echo '$' . number_format($progress_data['current_total'], 0) . ' de $' . number_format($progress_data['goal'], 0); ?></p>
+    <div class="donations-module-wrapper">
+        <h2>Donate to Trama Tres Vidas</h2>
+        <p>Trama Tres Vidas son proyectos hermanos que brindan servicios enfocados en el acceso a comida de alta densidad nutricional.</p>
 
-        <form id="donations-form" class="donations-form" onsubmit="return false;">
-            <input type="hidden" name="button_id" value="<?php echo esc_attr(get_option('paypal_hosted_button_id')); ?>">
-            <input type="hidden" name="donation_nonce" value="<?php echo wp_create_nonce('save_donation'); ?>">
-            <div id="paypal-button-container" style="margin-top: 10px; text-align: left;"></div>
-        </form>
-    </div>
-
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        var checkPayPalInterval = setInterval(function() {
-            if (typeof paypal !== 'undefined') {
-                clearInterval(checkPayPalInterval);
-
-                paypal.Buttons({
-                    createOrder: function(data, actions) {
-                        return actions.order.create({
-                            purchase_units: [{
-                                amount: {
-                                    value: '1.00' // Default value
-                                }
-                            }]
-                        });
-                    },
-                    onApprove: function(data, actions) {
-                        return actions.order.capture().then(function(details) {
-                            var donationData = new FormData();
-                            donationData.append('action', 'save_donation');
-                            donationData.append('donation_nonce', '<?php echo wp_create_nonce('save_donation'); ?>');
-                            donationData.append('transaction_id', data.orderID);
-                            donationData.append('donation_amount', '1.00');
-
-                            fetch('<?php echo admin_url('admin-ajax.php'); ?>', {
-                                method: 'POST',
-                                body: donationData
-                            })
-                            .then(response => response.json())
-                            .then(data => {
-                                if (data.success) {
-                                    document.getElementById('donation-summary').innerHTML = '<?php echo '$' . number_format($progress_data['current_total'], 0) . ' de $' . number_format($progress_data['goal'], 0); ?>';
-                                    var newProgress = <?php echo $progress_data['progress']; ?>;
-                                    document.getElementById('progress-bar').style.width = newProgress + '%';
-                                } else {
-                                    console.error('Error saving donation:', data.message);
-                                }
-                            })
-                            .catch(error => {
-                                console.error('Fetch error:', error);
-                            });
-                        });
-                    }
-                }).render('#paypal-button-container');
+        <!-- Inline CSS styles for donation amount buttons -->
+        <style>
+            .donation-amount {
+                padding: 10px 20px;
+                margin: 5px;
+                border: 1px solid #ccc;
+                background-color: #f0f0f0;
+                cursor: pointer;
             }
-        }, 500);
-    });
-    </script>
 
+            .donation-amount.selected {
+                background-color: #00aaff;
+                color: white;
+                border-color: #0077cc;
+            }
+        </style>
+
+        <!-- Pre-set donation amounts -->
+        <div>
+            <button class="donation-amount" value="5">$5 USD</button>
+            <button class="donation-amount" value="25">$25 USD</button>
+            <button class="donation-amount" value="100">$100 USD</button>
+            <button class="donation-amount" value="Other" id="other-amount">Other</button>
+        </div>
+
+        <!-- Custom amount field -->
+        <div id="custom-amount-field" style="display: none;">
+            <input type="number" id="custom-amount" name="custom_amount" placeholder="Enter Amount" />
+        </div>
+
+        <!-- Checkbox for covering fees -->
+        <div>
+            <input type="checkbox" id="cover-fees" name="cover_fees" value="1" />
+            <label id="cover-fees-label" for="cover-fees">Add $0.00 USD to help cover the fees.</label>
+        </div>
+
+        <!-- Recurring donation checkbox -->
+        <div>
+            <label><input type="checkbox" id="recurring-donation" name="recurring_donation" value="1" /> Make this a recurring donation</label>
+        </div>
+
+        <!-- PayPal button integration -->
+        <div id="paypal-button-container" style="margin-top: 10px;"></div>
+    </div>
     <?php
     return ob_get_clean();
 }
+
+
+
 
     // Method to get the current total donations
     private function get_current_donations_total() {
@@ -794,64 +928,62 @@ class PayPal_Donations_Tracker {
 
 
     // Method to save a donation via AJAX
-    public function save_donation() {
-        // Check and verify nonce
-        if (
-            !isset($_POST['donation_nonce']) ||
-            !wp_verify_nonce($_POST['donation_nonce'], 'save_donation')
-        ) {
-            wp_send_json([
-                'success' => false,
-                'message' => 'Invalid security token.',
-            ]);
-            return;
-        }
-
-        // Sanitize and validate input
-        $transaction_id = sanitize_text_field($_POST['transaction_id']);
-        $amount = isset($_POST['donation_amount']) ? floatval($_POST['donation_amount']) : 0;
-
-        if (empty($transaction_id) || $amount <= 0) {
-            wp_send_json([
-                'success' => false,
-                'message' => 'Invalid donation data.',
-            ]);
-            return;
-        }
-
-        // Insert data into the database
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'donations';
-
-        $inserted = $wpdb->insert($table_name, [
-            'transaction_id' => $transaction_id,
-            'amount' => $amount,
-            'currency' => '', // Currency is not provided here
-            'donor_name' => '', // Donor name is not provided here
-            'donor_email' => '', // Donor email is not provided here
-            'donor_address' => '', // Donor address is not provided here
-            'created_at' => current_time('mysql'),
-        ]);
-
-        // Check if insertion was successful
-        if ($inserted === false) {
-            wp_send_json([
-                'success' => false,
-                'message' => 'Failed to save donation.',
-            ]);
-            return;
-        }
-
-        // Update donation metrics
-        update_option('total_amount_raised', $this->get_current_donations_total());
-        update_option('number_of_donations', $this->get_total_donations_count());
-
-        // Send success response
+    // Method to save a donation via AJAX
+public function save_donation() {
+    // Check and verify nonce
+    if (
+        !isset($_POST['donation_nonce']) ||
+        !wp_verify_nonce($_POST['donation_nonce'], 'save_donation')
+    ) {
         wp_send_json([
-            'success' => true,
-            'current_total' => $this->get_current_donations_total(),
+            'success' => false,
+            'message' => 'Invalid security token.',
         ]);
+        return;
     }
+
+    // Sanitize and validate input
+    $transaction_id = sanitize_text_field($_POST['transaction_id']);
+    $amount = isset($_POST['donation_amount']) ? floatval($_POST['donation_amount']) : 0;
+
+    if (empty($transaction_id) || $amount <= 0) {
+        wp_send_json([
+            'success' => false,
+            'message' => 'Invalid donation data.',
+        ]);
+        return;
+    }
+
+    // Insert data into the database
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'donations';
+
+    $inserted = $wpdb->insert($table_name, [
+        'transaction_id' => $transaction_id,
+        'amount' => $amount,
+        'currency' => 'USD', // Assuming USD for simplicity
+        'donor_name' => '', // Donor name is not provided here
+        'donor_email' => '', // Donor email is not provided here
+        'donor_address' => '', // Donor address is not provided here
+        'created_at' => current_time('mysql'),
+    ]);
+
+    // Check if insertion was successful
+    if ($inserted === false) {
+        wp_send_json([
+            'success' => false,
+            'message' => 'Failed to save donation.',
+        ]);
+        return;
+    }
+
+    // Send success response
+    wp_send_json([
+        'success' => true,
+        'current_total' => $this->get_current_donations_total(),
+    ]);
+}
+
 }
 
 // Initialize the plugin
