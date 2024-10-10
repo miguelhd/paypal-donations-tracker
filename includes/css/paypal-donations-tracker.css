@@ -1,0 +1,269 @@
+/* Variables */
+:root {
+    --donate-button-color: #0077cc;
+    --donate-button-border-radius: 5px;
+    --donate-button-width: 100px;
+    --donate-button-height: 40px;
+    --donate-button-text-color: #fff;
+
+    --progress-bar-color: #28a745;
+    --progress-bar-well-color: #e9ecef;
+    --progress-bar-height: 20px;
+    --progress-bar-border-radius: 0px;
+    --donations-text-color: #333333;
+}
+
+/* Donate Button Styles */
+.donation-modal-button {
+    background-color: var(--donate-button-color);
+    color: var(--donate-button-text-color);
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    border-radius: var(--donate-button-border-radius);
+    width: var(--donate-button-width);
+    height: var(--donate-button-height);
+    min-width: 60px;
+}
+
+.donation-modal-button:hover {
+    opacity: 0.9;
+}
+
+/* Modal Styles */
+#donation-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 1000;
+}
+
+#donation-modal .modal-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0,0,0,0.5);
+}
+
+#donation-modal .modal-content {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    width: 90%;
+    max-width: 600px;
+    padding: 20px;
+    border-radius: 5px;
+    z-index: 1001;
+    box-sizing: border-box;
+    overflow-y: auto;
+    max-height: 90%;
+}
+
+#donation-modal .close {
+    position: absolute;
+    top: 10px;
+    right: 15px;
+    font-size: 28px;
+    font-weight: bold;
+    color: #aaa;
+    cursor: pointer;
+}
+
+#donation-modal .close:hover,
+#donation-modal .close:focus {
+    color: black;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+/* Donation Modal Content Styles */
+.donations-module-wrapper h2,
+.donations-module-wrapper p {
+    text-align: center;
+}
+
+.donation-amounts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.donations-module-wrapper .donation-amount {
+    padding: 10px;
+    margin: 5px;
+    border: 1px solid #ccc;
+    background-color: #f0f0f0;
+    cursor: pointer;
+    width: calc(50% - 12px); /* Two buttons per row with margins */
+    box-sizing: border-box;
+}
+
+.donations-module-wrapper .donation-amount.selected {
+    background-color: #00aaff;
+    color: white;
+    border-color: #0077cc;
+}
+
+/* Adjustments for small screens */
+@media (max-width: 480px) {
+    .donations-module-wrapper .donation-amount {
+        width: 100%; /* One button per row on small screens */
+        margin-left: 0;
+        margin-right: 0;
+    }
+
+    #donation-modal .modal-content {
+        padding: 15px;
+    }
+
+    #donation-modal .close {
+        font-size: 24px;
+        top: 5px;
+        right: 10px;
+    }
+}
+
+/* Progress Bar Styles */
+.donations-progress-bar-wrapper {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.donations-progress-text,
+.donations-progress-percentage {
+    margin-bottom: 5px;
+    font-size: 16px;
+    color: var(--donations-text-color);
+}
+
+.donations-progress-well {
+    background-color: var(--progress-bar-well-color);
+    height: var(--progress-bar-height);
+    border-radius: var(--progress-bar-border-radius);
+    margin: 10px auto;
+    position: relative;
+    overflow: hidden;
+}
+
+.donations-progress-bar {
+    background-color: var(--progress-bar-color);
+    height: 100%;
+    border-radius: inherit;
+    transition: width 0.6s ease;
+    max-width: 100%;
+}
+
+/* Dashboard and Table Styles */
+.donations-dashboard {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    margin-bottom: 30px;
+    margin-top: 20px;
+}
+
+.donations-metrics-card {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    padding: 20px;
+    text-align: center;
+    flex: 1;
+    margin: 10px;
+}
+
+.donations-metric-value {
+    font-size: 2em;
+    font-weight: bold;
+    color: #333;
+}
+
+.donations-metric-label {
+    font-size: 1em;
+    color: #666;
+    margin-top: 10px;
+}
+
+.donations-progress {
+    margin-top: 15px;
+    background-color: #e9ecef;
+    border-radius: 8px;
+    overflow: hidden;
+    height: 10px;
+    width: 100%;
+}
+
+.donations-progress-bar {
+    height: 100%;
+    background-color: #28a745;
+    transition: width 0.4s ease;
+}
+
+.donations-module-table {
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    width: 100%;
+    margin-top: 20px;
+}
+
+.donations-module-table th,
+.donations-module-table td {
+    border: 1px solid #e9ecef;
+    padding: 8px;
+}
+
+/* Form Styles */
+.donations-module-wrapper h1 {
+    font-size: 24px;
+    margin-bottom: 20px;
+}
+
+.donations-module-wrapper .donations-module-title {
+    font-size: 20px;
+    margin-top: 40px; /* Increased space between sections */
+}
+
+.donations-module-wrapper .donations-module-separator {
+    margin-top: 10px; /* Small space between title and separator */
+    margin-bottom: 20px; /* Consistent space between separator and section content */
+}
+
+.donations-module-wrapper .donations-module-form-table th {
+    font-weight: normal;
+    width: 240px;
+    padding-bottom: 5px;
+    padding-top: 5px;
+}
+
+.donations-module-wrapper .donations-module-form-table td {
+    padding-bottom: 5px;
+    padding-top: 5px;
+}
+
+.donations-module-wrapper .donations-module-regular-text {
+    width: 100%;
+    max-width: 400px;
+}
+
+.donations-module-wrapper .donations-module-large-text {
+    width: 100%;
+    max-width: 400px;
+}
+
+.donations-module-wrapper .donations-module-large-color-picker {
+    width: 70px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+}
+
+.donations-module-wrapper .donations-module-small-text {
+    width: 70px;
+}

@@ -2,7 +2,7 @@
 /*
 Plugin Name: PayPal Donations Tracker
 Description: A plugin to track donations via PayPal and display progress towards a goal.
-Version: 1.1
+Version: 1.3
 Author: Your Name
 */
 
@@ -19,8 +19,10 @@ class PayPal_Donations_Tracker {
         add_action('admin_menu', [$this, 'add_admin_menu']);
         add_action('admin_init', [$this, 'register_settings']);
         add_shortcode('paypal_donations_form', [$this, 'donations_form_shortcode']);
+        add_shortcode('paypal_donations_progress', [$this, 'donations_progress_shortcode']);
         add_action('wp_ajax_save_donation', [$this, 'save_donation']);
         add_action('wp_ajax_nopriv_save_donation', [$this, 'save_donation']);
+        add_action('wp_enqueue_scripts', [$this, 'enqueue_frontend_styles']);
 
         // Register the webhook listener
         add_action('rest_api_init', [$this, 'register_webhook_listener']);
@@ -36,7 +38,7 @@ class PayPal_Donations_Tracker {
         $charset_collate = $wpdb->get_charset_collate();
 
         $installed_version = get_option('paypal_donations_tracker_db_version');
-        $current_version = '1.1'; // Update the version as needed
+        $current_version = '1.3'; // Updated version
 
         if ($installed_version != $current_version) {
             $sql = "CREATE TABLE $table_name (
@@ -113,37 +115,60 @@ class PayPal_Donations_Tracker {
         // General settings
         register_setting('paypal_donations_tracker', 'donations_goal', [
             'sanitize_callback' => 'intval',
+            'default' => 1000,
         ]);
         register_setting('paypal_donations_tracker', 'paypal_hosted_button_id');
         register_setting('paypal_donations_tracker', 'cta_paragraph', 'sanitize_textarea_field');
         register_setting('paypal_donations_tracker', 'number_of_donations', [
             'default' => 0,
+            'sanitize_callback' => 'intval',
         ]);
         register_setting('paypal_donations_tracker', 'total_amount_raised', [
             'default' => 0,
+            'sanitize_callback' => 'floatval',
         ]);
 
         // Display settings
         register_setting('paypal_donations_tracker', 'show_amount_raised', [
             'default' => '1',
+            'sanitize_callback' => 'sanitize_text_field',
         ]);
         register_setting('paypal_donations_tracker', 'show_percentage_of_goal', [
             'default' => '1',
+            'sanitize_callback' => 'sanitize_text_field',
         ]);
         register_setting('paypal_donations_tracker', 'show_number_of_donations', [
             'default' => '1',
+            'sanitize_callback' => 'sanitize_text_field',
         ]);
         register_setting('paypal_donations_tracker', 'show_cta_paragraph', [
             'default' => '1',
+            'sanitize_callback' => 'sanitize_text_field',
         ]);
         register_setting('paypal_donations_tracker', 'content_alignment', [
             'default' => 'center',
+            'sanitize_callback' => 'sanitize_text_field',
         ]);
-        register_setting('paypal_donations_tracker', 'progress_bar_color');
-        register_setting('paypal_donations_tracker', 'progress_bar_height');
-        register_setting('paypal_donations_tracker', 'progress_bar_well_color');
-        register_setting('paypal_donations_tracker', 'progress_bar_well_width');
-        register_setting('paypal_donations_tracker', 'progress_bar_border_radius');
+        register_setting('paypal_donations_tracker', 'progress_bar_color', [
+            'default' => '#28a745',
+            'sanitize_callback' => 'sanitize_hex_color',
+        ]);
+        register_setting('paypal_donations_tracker', 'progress_bar_height', [
+            'default' => 20,
+            'sanitize_callback' => 'intval',
+        ]);
+        register_setting('paypal_donations_tracker', 'progress_bar_well_color', [
+            'default' => '#e9ecef',
+            'sanitize_callback' => 'sanitize_hex_color',
+        ]);
+        register_setting('paypal_donations_tracker', 'progress_bar_well_width', [
+            'default' => 100,
+            'sanitize_callback' => 'intval',
+        ]);
+        register_setting('paypal_donations_tracker', 'progress_bar_border_radius', [
+            'default' => 0,
+            'sanitize_callback' => 'intval',
+        ]);
         register_setting('paypal_donations_tracker', 'donations_text_color', [
             'default' => '#333333', // Default text color (dark gray)
             'sanitize_callback' => 'sanitize_hex_color',
@@ -155,9 +180,10 @@ class PayPal_Donations_Tracker {
         register_setting('paypal_donations_tracker', 'paypal_webhook_id');
         register_setting('paypal_donations_tracker', 'paypal_environment', [
             'default' => 'sandbox',
+            'sanitize_callback' => 'sanitize_text_field',
         ]);
 
-        // Register PayPal fee settings
+        // PayPal fee settings
         register_setting('paypal_donations_tracker', 'paypal_fee_percentage', [
             'default' => '2.9',  // Default PayPal fee percentage
             'sanitize_callback' => 'floatval',
@@ -165,6 +191,28 @@ class PayPal_Donations_Tracker {
         register_setting('paypal_donations_tracker', 'paypal_fixed_fee', [
             'default' => '0.30',  // Default PayPal fixed fee
             'sanitize_callback' => 'floatval',
+        ]);
+
+        // Donate Button customization settings
+        register_setting('paypal_donations_tracker', 'donate_button_label', [
+            'default' => 'Donate Now',
+            'sanitize_callback' => 'sanitize_text_field',
+        ]);
+        register_setting('paypal_donations_tracker', 'donate_button_color', [
+            'default' => '#0077cc',
+            'sanitize_callback' => 'sanitize_hex_color',
+        ]);
+        register_setting('paypal_donations_tracker', 'donate_button_border_radius', [
+            'default' => 5,
+            'sanitize_callback' => 'intval',
+        ]);
+        register_setting('paypal_donations_tracker', 'donate_button_width', [
+            'default' => 100,
+            'sanitize_callback' => 'intval',
+        ]);
+        register_setting('paypal_donations_tracker', 'donate_button_height', [
+            'default' => 40,
+            'sanitize_callback' => 'intval',
         ]);
     }
 
@@ -366,7 +414,7 @@ class PayPal_Donations_Tracker {
                 <table class="donations-module-form-table">
                     <tr valign="top">
                         <th scope="row"><label for="donations_goal">Meta de Donaciones</label></th>
-                        <td><input type="number" id="donations_goal" name="donations_goal" value="<?php echo esc_attr(intval(get_option('donations_goal'))); ?>" placeholder="1000" class="donations-module-regular-text" /></td>
+                        <td><input type="number" id="donations_goal" name="donations_goal" value="<?php echo esc_attr(intval(get_option('donations_goal', 1000))); ?>" placeholder="1000" class="donations-module-regular-text" /></td>
                     </tr>
                     <tr valign="top">
                         <th scope="row"><label for="paypal_hosted_button_id">PayPal Button ID</label></th>
@@ -462,25 +510,51 @@ class PayPal_Donations_Tracker {
                     <!-- Color Adjustments -->
                     <tr valign="top">
                         <th scope="row"><label for="progress_bar_color">Color de la Barra de Progreso</label></th>
-                        <td><input type="color" id="progress_bar_color" name="progress_bar_color" value="<?php echo esc_attr(get_option('progress_bar_color', '#00ff00')); ?>" placeholder="#00ff00" class="donations-module-large-color-picker" /></td>
+                        <td><input type="color" id="progress_bar_color" name="progress_bar_color" value="<?php echo esc_attr(get_option('progress_bar_color', '#28a745')); ?>" placeholder="#28a745" class="donations-module-large-color-picker" /></td>
                     </tr>
                     <tr valign="top">
                         <th scope="row"><label for="progress_bar_well_color">Color del Fondo de la Barra de Progreso</label></th>
-                        <td><input type="color" id="progress_bar_well_color" name="progress_bar_well_color" value="<?php echo esc_attr(get_option('progress_bar_well_color', '#eeeeee')); ?>" placeholder="#eeeeee" class="donations-module-large-color-picker" /></td>
+                        <td><input type="color" id="progress_bar_well_color" name="progress_bar_well_color" value="<?php echo esc_attr(get_option('progress_bar_well_color', '#e9ecef')); ?>" placeholder="#e9ecef" class="donations-module-large-color-picker" /></td>
                     </tr>
 
                     <!-- Sizing Adjustments -->
                     <tr valign="top">
-                        <th scope="row"><label for="progress_bar_height">Altura de la Barra de Progreso (px)</th>
+                        <th scope="row"><label for="progress_bar_height">Altura de la Barra de Progreso (px)</label></th>
                         <td><input type="number" id="progress_bar_height" name="progress_bar_height" value="<?php echo esc_attr(get_option('progress_bar_height', 20)); ?>" placeholder="20" class="donations-module-small-text" /></td>
                     </tr>
                     <tr valign="top">
                         <th scope="row"><label for="progress_bar_well_width">Ancho del Fondo de la Barra de Progreso (%)</label></th>
-                        <td><input type="number" id="progress_bar_well_width" name="progress_bar_well_width" value="<?php echo esc_attr(get_option('progress_bar_well_width', 100)); ?>" placeholder="100" class="donations-module-small-text" /></td>
+                        <td><input type="number" id="progress_bar_well_width" name="progress_bar_well_width" value="<?php echo esc_attr(get_option('progress_bar_well_width', 100)); ?>" placeholder="100" class="donations-module-small-text" min="1" /></td>
                     </tr>
                     <tr valign="top">
                         <th scope="row"><label for="progress_bar_border_radius">Esquinas Redondeadas de la Barra de Progreso (px)</label></th>
                         <td><input type="number" id="progress_bar_border_radius" name="progress_bar_border_radius" value="<?php echo esc_attr(get_option('progress_bar_border_radius', 0)); ?>" placeholder="0" class="donations-module-small-text" /></td>
+                    </tr>
+                </table>
+
+                <!-- Donate Button Customization Section -->
+                <h2 class="donations-module-title">Personalización del Botón de Donación</h2>
+                <hr class="donations-module-separator" />
+                <table class="donations-module-form-table">
+                    <tr valign="top">
+                        <th scope="row"><label for="donate_button_label">Etiqueta del Botón</label></th>
+                        <td><input type="text" id="donate_button_label" name="donate_button_label" value="<?php echo esc_attr(get_option('donate_button_label', 'Donate Now')); ?>" placeholder="Donate Now" class="donations-module-regular-text" /></td>
+                    </tr>
+                    <tr valign="top">
+                        <th scope="row"><label for="donate_button_color">Color del Botón</label></th>
+                        <td><input type="color" id="donate_button_color" name="donate_button_color" value="<?php echo esc_attr(get_option('donate_button_color', '#0077cc')); ?>" class="donations-module-large-color-picker" /></td>
+                    </tr>
+                    <tr valign="top">
+                        <th scope="row"><label for="donate_button_border_radius">Esquinas Redondeadas del Botón (px)</label></th>
+                        <td><input type="number" id="donate_button_border_radius" name="donate_button_border_radius" value="<?php echo esc_attr(get_option('donate_button_border_radius', 5)); ?>" placeholder="5" class="donations-module-small-text" /></td>
+                    </tr>
+                    <tr valign="top">
+                        <th scope="row"><label for="donate_button_width">Ancho del Botón (px)</label></th>
+                        <td><input type="number" id="donate_button_width" name="donate_button_width" value="<?php echo esc_attr(get_option('donate_button_width', 100)); ?>" min="60" placeholder="100" class="donations-module-small-text" /></td>
+                    </tr>
+                    <tr valign="top">
+                        <th scope="row"><label for="donate_button_height">Altura del Botón (px)</label></th>
+                        <td><input type="number" id="donate_button_height" name="donate_button_height" value="<?php echo esc_attr(get_option('donate_button_height', 40)); ?>" placeholder="40" class="donations-module-small-text" /></td>
                     </tr>
                 </table>
 
@@ -684,6 +758,12 @@ class PayPal_Donations_Tracker {
         <?php
     }
 
+    // Method to enqueue frontend styles
+    public function enqueue_frontend_styles() {
+        // Enqueue the plugin's CSS file
+        wp_enqueue_style('paypal-donations-tracker-styles', plugin_dir_url(__FILE__) . 'css/paypal-donations-tracker.css');
+    }
+
     // Method to enqueue modal assets
     public function enqueue_modal_assets() {
         // Enqueue jQuery
@@ -692,344 +772,365 @@ class PayPal_Donations_Tracker {
 
     // Method to handle the donation form shortcode
     public function donations_form_shortcode() {
+        // Retrieve button customization settings
+        $donate_button_label = esc_attr(get_option('donate_button_label', 'Donate Now'));
+        $donate_button_color = esc_attr(get_option('donate_button_color', '#0077cc'));
+        $donate_button_border_radius = intval(get_option('donate_button_border_radius', 5));
+        $donate_button_width = intval(get_option('donate_button_width', 100));
+        $donate_button_height = intval(get_option('donate_button_height', 40));
+
+        // Ensure minimum button width of 60px
+        if ($donate_button_width < 60) {
+            $donate_button_width = 60;
+        }
+
         ob_start();
         ?>
         <!-- Trigger Button -->
-        <button id="open-donation-modal" class="donation-modal-button">Donate Now</button>
+        <button id="open-donation-modal" class="donation-modal-button" style="
+            background-color: <?php echo $donate_button_color; ?>;
+            border-radius: <?php echo $donate_button_border_radius; ?>px;
+            width: <?php echo $donate_button_width; ?>px;
+            height: <?php echo $donate_button_height; ?>px;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        "><?php echo $donate_button_label; ?></button>
         <?php
         return ob_get_clean();
     }
 
     // Method to output the donation modal at the end of the body
-  public function output_donation_modal() {
-    // Enqueue necessary scripts and styles
-    $this->enqueue_modal_assets();
+    public function output_donation_modal() {
+        // Enqueue necessary scripts and styles
+        $this->enqueue_modal_assets();
 
-    // Enqueue PayPal SDK script
-    $client_id = esc_attr(get_option('paypal_client_id'));
-    $paypal_environment = get_option('paypal_environment', 'sandbox');
-    $paypal_sdk_url = $paypal_environment === 'sandbox' ? 'https://www.sandbox.paypal.com/sdk/js' : 'https://www.paypal.com/sdk/js';
+        // Enqueue PayPal SDK script
+        $client_id = esc_attr(get_option('paypal_client_id'));
+        $paypal_environment = get_option('paypal_environment', 'sandbox');
+        $paypal_sdk_url = $paypal_environment === 'sandbox' ? 'https://www.sandbox.paypal.com/sdk/js' : 'https://www.paypal.com/sdk/js';
 
-    if (!empty($client_id)) {
-        wp_enqueue_script(
-            'paypal-sdk',
-            $paypal_sdk_url . '?client-id=' . $client_id . '&currency=USD',
-            [],
+        if (!empty($client_id)) {
+            wp_enqueue_script(
+                'paypal-sdk',
+                $paypal_sdk_url . '?client-id=' . $client_id . '&currency=USD',
+                [],
+                null,
+                true // Ensure the script is loaded in the footer
+            );
+        }
+
+        // Enqueue jQuery
+        wp_enqueue_script('jquery');
+
+        // Register and enqueue custom script with dependencies
+        wp_register_script(
+            'paypal-donations-script',
+            '', // No src since we'll add inline script
+            ['jquery', 'paypal-sdk'],
             null,
-            true // Ensure the script is loaded in the footer
+            true
         );
-    }
 
-    // Enqueue jQuery
-    wp_enqueue_script('jquery');
+        // The updated JavaScript code
+        ob_start();
+        ?>
+        (function($) {
+            // Modal functionality
+            $(document).ready(function() {
+                // Open the modal when the button is clicked
+                $("#open-donation-modal").on("click", function(e) {
+                    e.preventDefault();
+                    $("#donation-modal").fadeIn();
+                    calculateFees(); // Initialize fee calculation
+                });
 
-    // Register and enqueue custom script with dependencies
-    wp_register_script(
-        'paypal-donations-script',
-        '', // No src since we'll add inline script
-        ['jquery', 'paypal-sdk'],
-        null,
-        true
-    );
-
-    // The updated JavaScript code
-    ob_start();
-    ?>
-    (function($) {
-        // Modal functionality
-        $(document).ready(function() {
-            // Open the modal when the button is clicked
-            $("#open-donation-modal").on("click", function(e) {
-                e.preventDefault();
-                $("#donation-modal").fadeIn();
-                calculateFees(); // Initialize fee calculation
-            });
-
-            // Close the modal when the close button or overlay is clicked
-            $("#donation-modal .close, #donation-modal .modal-overlay").on("click", function() {
-                $("#donation-modal").fadeOut();
-            });
-
-            // Prevent modal content click from closing the modal
-            $("#donation-modal .modal-content").on("click", function(e) {
-                e.stopPropagation();
-            });
-
-            // Handle donation amount button clicks
-            $("#donation-modal .donation-amount").on("click", function() {
-                $("#donation-modal .donation-amount").removeClass("selected");
-                $(this).addClass("selected");
-                const selectedAmount = $(this).val();
-                $("#donation-modal #custom-amount-field").toggle(selectedAmount === "Other");
-                calculateFees();  // Recalculate fees when amount changes
-            });
-
-            // Custom amount input handler
-            $("#donation-modal #custom-amount").on("input", function() {
-                calculateFees();  // Recalculate fees when custom amount is entered
-            });
-
-            // Checkbox for covering fees
-            $("#donation-modal #cover-fees").on("change", function() {
-                calculateFees();  // Recalculate fees when checkbox is toggled
-            });
-
-            // Function to calculate and display fees
-            function calculateFees() {
-                let selectedAmount = $("#donation-modal .donation-amount.selected").val();
-                if (selectedAmount === "Other") {
-                    selectedAmount = $("#donation-modal #custom-amount").val();
-                }
-
-                selectedAmount = parseFloat(selectedAmount);  // Ensure it's a number
-
-                const feePercentage = parseFloat("<?php echo esc_attr(get_option('paypal_fee_percentage', 2.9)); ?>");
-                const fixedFee = parseFloat("<?php echo esc_attr(get_option('paypal_fixed_fee', 0.30)); ?>");
-
-                if (!selectedAmount || isNaN(selectedAmount)) {
-                    $("#donation-modal #cover-fees-label").text("Add $0.00 USD to help cover the fees.");
-                    return;  // Exit if no valid amount
-                }
-
-                let fee = (selectedAmount * feePercentage / 100) + fixedFee;
-                fee = fee.toFixed(2);
-                $("#donation-modal #cover-fees-label").text("Add $" + fee + " USD to help cover the fees.");
-            }
-
-            // PayPal button rendering inside the modal
-            paypal.Buttons({
-                // Hide the modal when the PayPal popup opens
-                onClick: function(data, actions) {
-                    // Validate donation amount
-                    let selectedButton = $("#donation-modal .donation-amount.selected");
-                    let donationAmount = selectedButton.val();
-
-                    if (donationAmount === "Other") {
-                        donationAmount = $("#donation-modal #custom-amount").val();
-                    }
-
-                    if (!donationAmount || isNaN(parseFloat(donationAmount))) {
-                        alert("Please select or enter a valid donation amount.");
-                        return actions.reject();
-                    }
-
-                    // If validation passes, hide the modal
+                // Close the modal when the close button or overlay is clicked
+                $("#donation-modal .close, #donation-modal .modal-overlay").on("click", function() {
                     $("#donation-modal").fadeOut();
+                });
 
-                    return actions.resolve();
-                },
-                createOrder: function(data, actions) {
-                    let selectedButton = $("#donation-modal .donation-amount.selected");
-                    let donationAmount = selectedButton.val();
+                // Prevent modal content click from closing the modal
+                $("#donation-modal .modal-content").on("click", function(e) {
+                    e.stopPropagation();
+                });
 
-                    if (donationAmount === "Other") {
-                        donationAmount = $("#donation-modal #custom-amount").val();
+                // Handle donation amount button clicks
+                $("#donation-modal .donation-amount").on("click", function() {
+                    $("#donation-modal .donation-amount").removeClass("selected");
+                    $(this).addClass("selected");
+                    const selectedAmount = $(this).val();
+                    $("#donation-modal #custom-amount-field").toggle(selectedAmount === "Other");
+                    calculateFees();  // Recalculate fees when amount changes
+                });
+
+                // Custom amount input handler
+                $("#donation-modal #custom-amount").on("input", function() {
+                    calculateFees();  // Recalculate fees when custom amount is entered
+                });
+
+                // Checkbox for covering fees
+                $("#donation-modal #cover-fees").on("change", function() {
+                    calculateFees();  // Recalculate fees when checkbox is toggled
+                });
+
+                // Function to calculate and display fees
+                function calculateFees() {
+                    let selectedAmount = $("#donation-modal .donation-amount.selected").val();
+                    if (selectedAmount === "Other") {
+                        selectedAmount = $("#donation-modal #custom-amount").val();
                     }
 
-                    let coverFees = $("#donation-modal #cover-fees").is(":checked");
+                    selectedAmount = parseFloat(selectedAmount);  // Ensure it's a number
 
-                    let feePercentage = parseFloat("<?php echo esc_attr(get_option('paypal_fee_percentage', 2.9)); ?>");
-                    let fixedFee = parseFloat("<?php echo esc_attr(get_option('paypal_fixed_fee', 0.30)); ?>");
-                    let fee = (donationAmount * feePercentage / 100) + fixedFee;
-                    let totalAmount = coverFees ? (parseFloat(donationAmount) + parseFloat(fee)).toFixed(2) : parseFloat(donationAmount).toFixed(2);
+                    const feePercentage = parseFloat("<?php echo esc_attr(get_option('paypal_fee_percentage', 2.9)); ?>");
+                    const fixedFee = parseFloat("<?php echo esc_attr(get_option('paypal_fixed_fee', 0.30)); ?>");
 
-                    return actions.order.create({
-                        purchase_units: [{
-                            amount: {
-                                value: totalAmount
-                            }
-                        }]
-                    });
-                },
-                onApprove: function(data, actions) {
-                    return actions.order.capture().then(function(details) {
-                        // Make AJAX call to save the donation
-                        $.post("<?php echo admin_url('admin-ajax.php'); ?>", {
-                            action: "save_donation",
-                            donation_nonce: "<?php echo wp_create_nonce('save_donation'); ?>",
-                            transaction_id: details.id,
-                            donation_amount: details.purchase_units[0].amount.value
-                        }, function(response) {
-                            if (response.success) {
-                                // No need to hide the modal here as it's already hidden
-                            } else {
-                                alert("There was a problem saving your donation.");
-                            }
-                        });
-                    });
-                },
-                // Show the modal again if the payment is canceled
-                onCancel: function(data) {
-                    $("#donation-modal").fadeIn();
-                },
-                // Handle errors
-                onError: function(err) {
-                    $("#donation-modal").fadeIn();
-                    alert("An error occurred during the transaction. Please try again.");
+                    if (!selectedAmount || isNaN(selectedAmount)) {
+                        $("#donation-modal #cover-fees-label").text("Add $0.00 USD to help cover the fees.");
+                        return;  // Exit if no valid amount
+                    }
+
+                    let fee = (selectedAmount * feePercentage / 100) + fixedFee;
+                    fee = fee.toFixed(2);
+                    $("#donation-modal #cover-fees-label").text("Add $" + fee + " USD to help cover the fees.");
                 }
-            }).render("#donation-modal #paypal-button-container");
-        });
-    })(jQuery);
-    <?php
-    $custom_js = ob_get_clean();
-    wp_add_inline_script('paypal-donations-script', $custom_js);
-    wp_enqueue_script('paypal-donations-script');
 
-    // Output the modal HTML
-    ?>
-    <!-- Donation Modal -->
-    <div id="donation-modal" style="display: none;">
-        <div class="modal-overlay"></div>
-        <div class="modal-content">
-            <span class="close">&times;</span>
-            <div class="donations-module-wrapper">
-                <h2>Donate to Trama Tres Vidas</h2>
-                <p>Trama Tres Vidas son proyectos hermanos que brindan servicios enfocados en el acceso a comida de alta densidad nutricional.</p>
+                // PayPal button rendering inside the modal
+                paypal.Buttons({
+                    // Hide the modal when the PayPal popup opens
+                    onClick: function(data, actions) {
+                        // Validate donation amount
+                        let selectedButton = $("#donation-modal .donation-amount.selected");
+                        let donationAmount = selectedButton.val();
 
-                <!-- Pre-set donation amounts -->
-                <div>
-                    <button class="donation-amount" value="5">$5 USD</button>
-                    <button class="donation-amount" value="25">$25 USD</button>
-                    <button class="donation-amount" value="100">$100 USD</button>
-                    <button class="donation-amount" value="Other" id="other-amount">Other</button>
+                        if (donationAmount === "Other") {
+                            donationAmount = $("#donation-modal #custom-amount").val();
+                        }
+
+                        if (!donationAmount || isNaN(parseFloat(donationAmount))) {
+                            alert("Please select or enter a valid donation amount.");
+                            return actions.reject();
+                        }
+
+                        // If validation passes, hide the modal
+                        $("#donation-modal").fadeOut();
+
+                        return actions.resolve();
+                    },
+                    createOrder: function(data, actions) {
+                        let selectedButton = $("#donation-modal .donation-amount.selected");
+                        let donationAmount = selectedButton.val();
+
+                        if (donationAmount === "Other") {
+                            donationAmount = $("#donation-modal #custom-amount").val();
+                        }
+
+                        let coverFees = $("#donation-modal #cover-fees").is(":checked");
+
+                        let feePercentage = parseFloat("<?php echo esc_attr(get_option('paypal_fee_percentage', 2.9)); ?>");
+                        let fixedFee = parseFloat("<?php echo esc_attr(get_option('paypal_fixed_fee', 0.30)); ?>");
+                        let fee = (donationAmount * feePercentage / 100) + fixedFee;
+                        let totalAmount = coverFees ? (parseFloat(donationAmount) + parseFloat(fee)).toFixed(2) : parseFloat(donationAmount).toFixed(2);
+
+                        return actions.order.create({
+                            purchase_units: [{
+                                amount: {
+                                    value: totalAmount
+                                }
+                            }]
+                        });
+                    },
+                    onApprove: function(data, actions) {
+                        return actions.order.capture().then(function(details) {
+                            // Make AJAX call to save the donation
+                            $.post("<?php echo admin_url('admin-ajax.php'); ?>", {
+                                action: "save_donation",
+                                donation_nonce: "<?php echo wp_create_nonce('save_donation'); ?>",
+                                transaction_id: details.id,
+                                donation_amount: details.purchase_units[0].amount.value
+                            }, function(response) {
+                                if (response.success) {
+                                    // No need to hide the modal here as it's already hidden
+                                } else {
+                                    alert("There was a problem saving your donation.");
+                                }
+                            });
+                        });
+                    },
+                    // Show the modal again if the payment is canceled
+                    onCancel: function(data) {
+                        $("#donation-modal").fadeIn();
+                    },
+                    // Handle errors
+                    onError: function(err) {
+                        $("#donation-modal").fadeIn();
+                        alert("An error occurred during the transaction. Please try again.");
+                    }
+                }).render("#donation-modal #paypal-button-container");
+            });
+        })(jQuery);
+        <?php
+        $custom_js = ob_get_clean();
+        wp_add_inline_script('paypal-donations-script', $custom_js);
+        wp_enqueue_script('paypal-donations-script');
+
+        // Output the modal HTML
+        ?>
+        <!-- Donation Modal -->
+        <div id="donation-modal" style="display: none;">
+            <div class="modal-overlay"></div>
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <div class="donations-module-wrapper">
+                    <h2>Donate to Trama Tres Vidas</h2>
+                    <p>Trama Tres Vidas son proyectos hermanos que brindan servicios enfocados en el acceso a comida de alta densidad nutricional.</p>
+
+                    <!-- Pre-set donation amounts -->
+                    <div>
+                        <button class="donation-amount" value="5">$5 USD</button>
+                        <button class="donation-amount" value="25">$25 USD</button>
+                        <button class="donation-amount" value="100">$100 USD</button>
+                        <button class="donation-amount" value="Other" id="other-amount">Other</button>
+                    </div>
+
+                    <!-- Custom amount field -->
+                    <div id="custom-amount-field" style="display: none;">
+                        <input type="number" id="custom-amount" name="custom_amount" placeholder="Enter Amount" />
+                    </div>
+
+                    <!-- Checkbox for covering fees -->
+                    <div>
+                        <input type="checkbox" id="cover-fees" name="cover_fees" value="1" />
+                        <label id="cover-fees-label" for="cover-fees">Add $0.00 USD to help cover the fees.</label>
+                    </div>
+
+                    <!-- Recurring donation checkbox -->
+                    <div>
+                        <label><input type="checkbox" id="recurring-donation" name="recurring_donation" value="1" /> Make this a recurring donation</label>
+                    </div>
+
+                    <!-- PayPal button integration -->
+                    <div id="paypal-button-container" style="margin-top: 10px;"></div>
                 </div>
-
-                <!-- Custom amount field -->
-                <div id="custom-amount-field" style="display: none;">
-                    <input type="number" id="custom-amount" name="custom_amount" placeholder="Enter Amount" />
-                </div>
-
-                <!-- Checkbox for covering fees -->
-                <div>
-                    <input type="checkbox" id="cover-fees" name="cover_fees" value="1" />
-                    <label id="cover-fees-label" for="cover-fees">Add $0.00 USD to help cover the fees.</label>
-                </div>
-
-                <!-- Recurring donation checkbox -->
-                <div>
-                    <label><input type="checkbox" id="recurring-donation" name="recurring_donation" value="1" /> Make this a recurring donation</label>
-                </div>
-
-                <!-- PayPal button integration -->
-                <div id="paypal-button-container" style="margin-top: 10px;"></div>
             </div>
         </div>
-    </div>
 
-    <!-- Modal Styles -->
-    <style>
-        /* Modal Styles */
-        #donation-modal {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            z-index: 1000;
-        }
+        <!-- Modal Styles -->
+        <style>
+            /* Modal Styles */
+            #donation-modal {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100vw;
+                height: 100vh;
+                z-index: 1000;
+            }
 
-        #donation-modal .modal-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            background: rgba(0,0,0,0.5);
-        }
-
-        #donation-modal .modal-content {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: #fff;
-            width: 90%;
-            max-width: 600px;
-            padding: 20px;
-            border-radius: 5px;
-            z-index: 1001;
-            box-sizing: border-box;
-            overflow-y: auto;
-            max-height: 90%;
-        }
-
-        #donation-modal .close {
-            position: absolute;
-            top: 10px;
-            right: 15px;
-            font-size: 28px;
-            font-weight: bold;
-            color: #aaa;
-            cursor: pointer;
-        }
-
-        #donation-modal .close:hover,
-        #donation-modal .close:focus {
-            color: black;
-            text-decoration: none;
-            cursor: pointer;
-        }
-
-        .donation-modal-button {
-            /* Style your trigger button as needed */
-            padding: 10px 20px;
-            background-color: #0077cc;
-            color: #fff;
-            border: none;
-            cursor: pointer;
-            border-radius: 5px;
-            font-size: 16px;
-        }
-
-        .donation-modal-button:hover {
-            background-color: #005fa3;
-        }
-
-        /* Responsive adjustments */
-        .donations-module-wrapper h2,
-        .donations-module-wrapper p {
-            text-align: center;
-        }
-
-        .donations-module-wrapper .donation-amount {
-            padding: 10px;
-            margin: 5px;
-            border: 1px solid #ccc;
-            background-color: #f0f0f0;
-            cursor: pointer;
-            width: calc(50% - 12px); /* Two buttons per row with margins */
-            box-sizing: border-box;
-        }
-
-        .donations-module-wrapper .donation-amount.selected {
-            background-color: #00aaff;
-            color: white;
-            border-color: #0077cc;
-        }
-
-        @media (max-width: 480px) {
-            .donations-module-wrapper .donation-amount {
-                width: 100%; /* One button per row on small screens */
-                margin-left: 0;
-                margin-right: 0;
+            #donation-modal .modal-overlay {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100vw;
+                height: 100vh;
+                background: rgba(0,0,0,0.5);
             }
 
             #donation-modal .modal-content {
-                padding: 15px;
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: #fff;
+                width: 90%;
+                max-width: 600px;
+                padding: 20px;
+                border-radius: 5px;
+                z-index: 1001;
+                box-sizing: border-box;
+                overflow-y: auto;
+                max-height: 90%;
             }
 
             #donation-modal .close {
-                font-size: 24px;
-                top: 5px;
-                right: 10px;
+                position: absolute;
+                top: 10px;
+                right: 15px;
+                font-size: 28px;
+                font-weight: bold;
+                color: #aaa;
+                cursor: pointer;
             }
-        }
-    </style>
-    <?php
-}
+
+            #donation-modal .close:hover,
+            #donation-modal .close:focus {
+                color: black;
+                text-decoration: none;
+                cursor: pointer;
+            }
+
+            .donation-modal-button {
+                /* Style your trigger button as needed */
+                padding: 10px 20px;
+                background-color: #0077cc;
+                color: #fff;
+                border: none;
+                cursor: pointer;
+                border-radius: 5px;
+                font-size: 16px;
+            }
+
+            .donation-modal-button:hover {
+                background-color: #005fa3;
+            }
+
+            /* Responsive adjustments */
+            .donations-module-wrapper h2,
+            .donations-module-wrapper p {
+                text-align: center;
+            }
+
+            .donations-module-wrapper .donation-amount {
+                padding: 10px;
+                margin: 5px;
+                border: 1px solid #ccc;
+                background-color: #f0f0f0;
+                cursor: pointer;
+                width: calc(50% - 12px); /* Two buttons per row with margins */
+                box-sizing: border-box;
+            }
+
+            .donations-module-wrapper .donation-amount.selected {
+                background-color: #00aaff;
+                color: white;
+                border-color: #0077cc;
+            }
+
+            @media (max-width: 480px) {
+                .donations-module-wrapper .donation-amount {
+                    width: 100%; /* One button per row on small screens */
+                    margin-left: 0;
+                    margin-right: 0;
+                }
+
+                #donation-modal .modal-content {
+                    padding: 15px;
+                }
+
+                #donation-modal .close {
+                    font-size: 24px;
+                    top: 5px;
+                    right: 10px;
+                }
+            }
+        </style>
+        <?php
+    }
 
     // Method to get the current total donations
-    private function get_current_donations_total() {
+    protected function get_current_donations_total() {
         global $wpdb;
         $table_name = $wpdb->prefix . 'donations';
         $result = $wpdb->get_var("SELECT SUM(amount) FROM $table_name");
@@ -1037,7 +1138,7 @@ class PayPal_Donations_Tracker {
     }
 
     // Method to get the total number of donations
-    private function get_total_donations_count() {
+    protected function get_total_donations_count() {
         global $wpdb;
         $table_name = $wpdb->prefix . 'donations';
         $result = $wpdb->get_var("SELECT COUNT(*) FROM $table_name");
@@ -1045,7 +1146,7 @@ class PayPal_Donations_Tracker {
     }
 
     // Method to calculate campaign progress
-    private function get_progress_bar_data() {
+    protected function get_progress_bar_data() {
         $goal = intval(get_option('donations_goal', 0));
         $current_total = $this->get_current_donations_total();
         $progress = $goal > 0 ? ($current_total / $goal) * 100 : 0;
@@ -1111,6 +1212,83 @@ class PayPal_Donations_Tracker {
             'success' => true,
             'current_total' => $this->get_current_donations_total(),
         ]);
+    }
+
+    // Method to display the donations progress bar shortcode
+    public function donations_progress_shortcode() {
+        // Get the progress bar data
+        $progress_data = $this->get_progress_bar_data();
+
+        // Get settings for display options
+        $show_amount_raised = get_option('show_amount_raised', '1');
+        $show_percentage_of_goal = get_option('show_percentage_of_goal', '1');
+        $donations_text_color = esc_attr(get_option('donations_text_color', '#333333'));
+        $content_alignment = esc_attr(get_option('content_alignment', 'center'));
+
+        // Progress bar customization options
+        $progress_bar_color = esc_attr(get_option('progress_bar_color', '#28a745'));
+        $progress_bar_height = intval(get_option('progress_bar_height', 20));
+        $progress_bar_well_color = esc_attr(get_option('progress_bar_well_color', '#e9ecef'));
+        $progress_bar_well_width = intval(get_option('progress_bar_well_width', 100));
+        $progress_bar_border_radius = intval(get_option('progress_bar_border_radius', 0));
+
+        // Ensure the progress bar well width is valid
+        if ($progress_bar_well_width <= 0) {
+            $progress_bar_well_width = 100; // Set default to 100%
+        }
+
+        // Calculate the percentage
+        $percentage = $progress_data['progress'];
+        if ($percentage > 100) {
+            $percentage = 100;
+        } elseif ($percentage < 0) {
+            $percentage = 0;
+        }
+
+        // Determine the border radius for the progress bar based on percentage
+        if ($percentage >= 100) {
+            // Full border radius
+            $progress_bar_border_radius_css = $progress_bar_border_radius . 'px';
+        } else {
+            // Border radius only on left side
+            $progress_bar_border_radius_css = $progress_bar_border_radius . 'px 0px 0px ' . $progress_bar_border_radius . 'px';
+        }
+
+        // Prepare the HTML output
+        ob_start();
+        ?>
+        <div class="donations-progress-bar-wrapper" style="text-align: <?php echo $content_alignment; ?>;">
+            <?php if ($show_amount_raised == '1') : ?>
+                <div class="donations-progress-text" style="color: <?php echo $donations_text_color; ?>;">
+                    Total Recaudado: $<?php echo number_format($progress_data['current_total'], 2); ?> USD
+                </div>
+            <?php endif; ?>
+            <div class="donations-progress-well" style="
+                background-color: <?php echo $progress_bar_well_color; ?>;
+                width: <?php echo $progress_bar_well_width; ?>%;
+                height: <?php echo $progress_bar_height; ?>px;
+                border-radius: <?php echo $progress_bar_border_radius; ?>px;
+                margin: 10px auto;
+                position: relative;
+                overflow: hidden;
+                ">
+                <div class="donations-progress-bar" style="
+                    background-color: <?php echo $progress_bar_color; ?>;
+                    width: <?php echo $percentage; ?>%;
+                    height: 100%;
+                    border-radius: <?php echo $progress_bar_border_radius_css; ?>;
+                    max-width: 100%;
+                    ">
+                </div>
+            </div>
+            <?php if ($show_percentage_of_goal == '1') : ?>
+                <div class="donations-progress-percentage" style="color: <?php echo $donations_text_color; ?>;">
+                    <?php echo number_format($progress_data['progress'], 2); ?>% de la meta de $<?php echo number_format($progress_data['goal'], 2); ?> USD
+                </div>
+            <?php endif; ?>
+        </div>
+        <?php
+        return ob_get_clean();
     }
 }
 
