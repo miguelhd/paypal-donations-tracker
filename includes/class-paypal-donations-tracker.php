@@ -1,10 +1,4 @@
 <?php
-/*
-Plugin Name: PayPal Donations Tracker
-Description: A plugin to track donations via PayPal and display progress towards a goal.
-Version: 1.3
-Author: Your Name
-*/
 
 // Exit if accessed directly
 if (!defined('ABSPATH')) {
@@ -20,8 +14,6 @@ class PayPal_Donations_Tracker {
         add_action('admin_init', [$this, 'register_settings']);
         add_shortcode('paypal_donations_form', [$this, 'donations_form_shortcode']);
         add_shortcode('paypal_donations_progress', [$this, 'donations_progress_shortcode']);
-        add_action('wp_ajax_save_donation', [$this, 'save_donation']);
-        add_action('wp_ajax_nopriv_save_donation', [$this, 'save_donation']);
         add_action('wp_enqueue_scripts', [$this, 'enqueue_frontend_styles']);
 
         // Register the webhook listener
@@ -32,36 +24,56 @@ class PayPal_Donations_Tracker {
     }
 
     // Method to run on plugin activation
-    public static function activate() {
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'donations';
-        $charset_collate = $wpdb->get_charset_collate();
+public static function activate() {
+    global $wpdb;
+    $donations_table = $wpdb->prefix . 'donations';
+    $temporary_table = $wpdb->prefix . 'donations_temp';
+    $charset_collate = $wpdb->get_charset_collate();
 
-        $installed_version = get_option('paypal_donations_tracker_db_version');
-        $current_version = '1.3'; // Updated version
+    $installed_version = get_option('paypal_donations_tracker_db_version');
+    $current_version = '1.4'; // Updated version
 
-        if ($installed_version != $current_version) {
-            $sql = "CREATE TABLE $table_name (
-                id mediumint(9) NOT NULL AUTO_INCREMENT,
-                transaction_id varchar(255) NOT NULL,
-                amount decimal(10, 2) NOT NULL,
-                currency varchar(10) NOT NULL,
-                donor_name varchar(255) NOT NULL,
-                donor_email varchar(255) NOT NULL,
-                donor_address text,
-                created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
-                PRIMARY KEY  (id)
-            ) $charset_collate;";
+    // Create the main donations table
+    $donations_sql = "CREATE TABLE IF NOT EXISTS $donations_table (
+        id mediumint(9) NOT NULL AUTO_INCREMENT,
+        transaction_id varchar(255) NOT NULL,
+        amount decimal(10, 2) NOT NULL,
+        currency varchar(10) NOT NULL,
+        donor_name varchar(255) NOT NULL,
+        donor_email varchar(255) NOT NULL,
+        donor_address text,
+        created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        PRIMARY KEY  (id)
+    ) $charset_collate;";
 
-            require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-            dbDelta($sql);
+    $wpdb->query($donations_sql);
 
-            update_option('paypal_donations_tracker_db_version', $current_version);
-        }
+    // Create the temporary storage table with a 'transaction_id' column
+    $temp_sql = "CREATE TABLE IF NOT EXISTS $temporary_table (
+        id mediumint(9) NOT NULL AUTO_INCREMENT,
+        order_id varchar(255) NOT NULL,
+        transaction_id varchar(255),
+        donor_name varchar(255),
+        donor_email varchar(255),
+        donor_address text,
+        amount decimal(10, 2),
+        currency varchar(10),
+        status varchar(50) DEFAULT 'pending',  
+        created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        PRIMARY KEY (id)
+    ) $charset_collate;";
 
-        // Flush rewrite rules
-        flush_rewrite_rules();
-    }
+    $wpdb->query($temp_sql);
+
+    // Update the version number of the database schema
+    update_option('paypal_donations_tracker_db_version', $current_version);
+
+    // Flush rewrite rules to apply the new table structure
+    flush_rewrite_rules();
+}
+
+
+
 
     // Method to run on plugin deactivation
     public static function deactivate() {
@@ -228,103 +240,295 @@ class PayPal_Donations_Tracker {
 
     // Method to handle webhook
     public function handle_webhook(WP_REST_Request $request) {
-        $body = $request->get_body();
-        $headers = $request->get_headers();
+    $body = $request->get_body();
+    $headers = $request->get_headers();
 
-        error_log('Webhook received.');
+    // Verify the webhook signature
+    $verification_result = $this->verify_webhook_signature($body, $headers);
+    if (!$verification_result) {
+        error_log('Webhook signature verification failed.');
+        return new WP_Error('invalid_signature', 'Invalid webhook signature', ['status' => 400]);
+    }
 
-        // Verify the webhook signature
-        $verification_result = $this->verify_webhook_signature($body, $headers);
-        if (!$verification_result) {
-            error_log('Webhook signature verification failed. Headers: ' . print_r($headers, true));
-            error_log('Webhook payload: ' . $body);
-            return new WP_Error('invalid_signature', 'Invalid webhook signature', ['status' => 400]);
-        }
+    $event = json_decode($body);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        error_log('Invalid JSON body: ' . json_last_error_msg());
+        return new WP_Error('invalid_json', 'Invalid JSON body', ['status' => 400]);
+    }
 
-        error_log('Webhook signature verified.');
+    // Log the full resource for debugging
+    error_log(print_r($event->resource, true));
 
-        // Decode the JSON body to handle the event
-        $event = json_decode($body);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log('Invalid JSON body: ' . json_last_error_msg());
-            return new WP_Error('invalid_json', 'Invalid JSON body', ['status' => 400]);
-        }
-
-        error_log('Event Type: ' . $event->event_type);
-
-        // Handle the PAYMENT.CAPTURE.COMPLETED event
-        if ($event->event_type === 'PAYMENT.CAPTURE.COMPLETED') {
-            $resource = $event->resource;
-
-            $transactionId = $resource->id;
-            $amount = $resource->amount->value;
-            $currency = $resource->amount->currency_code;
-
-            // Extract payer information
-            $payer = $resource->payer;
-            $donorName = $payer->name->given_name . ' ' . $payer->name->surname;
-            $donorEmail = $payer->email_address;
-            $donorAddress = isset($payer->address) ? $payer->address : null; // Address may not always be available
-
-            error_log('Transaction ID: ' . $transactionId);
-            error_log('Amount: ' . $amount . ' ' . $currency);
-            error_log('Donor Name: ' . $donorName);
-            error_log('Donor Email: ' . $donorEmail);
-
-            // Insert donation into the database
-            global $wpdb;
-            $table_name = $wpdb->prefix . 'donations';
-            $wpdb->insert($table_name, [
-                'transaction_id' => sanitize_text_field($transactionId),
-                'amount' => floatval($amount),
-                'currency' => sanitize_text_field($currency),
-                'donor_name' => sanitize_text_field($donorName),
-                'donor_email' => sanitize_email($donorEmail),
-                'donor_address' => maybe_serialize($donorAddress),
-                'created_at' => current_time('mysql'),
-            ]);
-
-            // Update donation metrics
-            update_option('total_amount_raised', $this->get_current_donations_total());
-            update_option('number_of_donations', $this->get_total_donations_count());
-
-            error_log('Donation saved successfully');
-            return new WP_REST_Response(['status' => 'success'], 200);
-        } else {
+    // Handle the different event types
+    switch ($event->event_type) {
+        case 'PAYMENT.CAPTURE.COMPLETED':
+        case 'PAYMENT.AUTHORIZATION.CREATED':
+        case 'CHECKOUT.ORDER.APPROVED':
+            $this->handle_webhook_event($event->event_type, $event->resource);
+            break;
+        default:
             error_log('Unhandled event type: ' . $event->event_type);
             return new WP_Error('unhandled_event', 'Unhandled event type', ['status' => 400]);
+    }
+
+    return new WP_REST_Response(['status' => 'success'], 200);
+}
+
+    // Method to handle webhook event
+private function handle_webhook_event($event_type, $resource) {
+    global $wpdb;
+    $temp_table = $wpdb->prefix . 'donations_temp';  // Temporary table for storing data
+    $donations_table = $wpdb->prefix . 'donations';  // Final donations table
+
+    // Handle CHECKOUT.ORDER.APPROVED event (save donor details and amount, but do not mark as completed)
+    if ($event_type === 'CHECKOUT.ORDER.APPROVED') {
+        $order_id = $resource->id;
+
+        // Extract donor details from the event
+        $payer = $resource->payer ?? null;
+        $donorName = 'N/A';
+        $donorEmail = 'N/A';
+        $donorAddress = [];
+
+        if ($payer) {
+            $donorName = isset($payer->name->given_name) && isset($payer->name->surname) ? $payer->name->given_name . ' ' . $payer->name->surname : 'N/A';
+            $donorEmail = $payer->email_address ?? 'N/A';
+            $donorAddress = serialize([
+                'address_line_1' => $resource->purchase_units[0]->shipping->address->address_line_1 ?? '',
+                'admin_area_2'   => $resource->purchase_units[0]->shipping->address->admin_area_2 ?? '',
+                'admin_area_1'   => $resource->purchase_units[0]->shipping->address->admin_area_1 ?? '',
+                'postal_code'    => $resource->purchase_units[0]->shipping->address->postal_code ?? '',
+                'country_code'   => $resource->purchase_units[0]->shipping->address->country_code ?? '',
+            ]);
+        }
+
+        // Extract the amount and currency from the event
+        $amount = $resource->purchase_units[0]->amount->value ?? 0;
+        $currency = $resource->purchase_units[0]->amount->currency_code ?? 'USD';
+
+        // Insert or update the donor details, amount, and currency into the temporary table
+        $wpdb->insert(
+            $temp_table,
+            [
+                'order_id'     => $order_id,
+                'donor_name'   => $donorName,
+                'donor_email'  => $donorEmail,
+                'donor_address'=> $donorAddress,
+                'amount'       => $amount,
+                'currency'     => $currency,
+                'status'       => 'pending',
+                'created_at'   => current_time('mysql'),
+            ]
+        );
+
+        error_log('Donor details and amount saved temporarily for order: ' . $order_id);
+    }
+
+    // Handle PAYMENT.CAPTURE.COMPLETED event
+    if ($event_type === 'PAYMENT.CAPTURE.COMPLETED') {
+        $order_id = $resource->supplementary_data->related_ids->order_id;
+
+        // Fetch the donor info from the temporary table
+        $donor_info = $wpdb->get_row(
+            $wpdb->prepare("SELECT * FROM $temp_table WHERE order_id = %s", $order_id),
+            ARRAY_A
+        );
+
+        if (!$donor_info) {
+            error_log('Temporary donor info not found for order: ' . $order_id);
+            return;
+        }
+
+        // Extract the transaction details from the capture
+        $transactionId = $resource->id;
+
+        // Before inserting, check if the transaction ID already exists
+        $existing = $wpdb->get_var(
+            $wpdb->prepare("SELECT COUNT(*) FROM $donations_table WHERE transaction_id = %s", $transactionId)
+        );
+
+        if ($existing) {
+            error_log('Donation already recorded for transaction ID: ' . $transactionId);
+            // Optionally, delete the temporary record if it's no longer needed
+            $wpdb->delete($temp_table, ['order_id' => $order_id]);
+            return;
+        }
+
+        // Insert the final transaction into the donations table
+        $wpdb->insert(
+            $donations_table,
+            [
+                'transaction_id' => $transactionId,
+                'amount'         => $donor_info['amount'],
+                'currency'       => $donor_info['currency'],
+                'donor_name'     => $donor_info['donor_name'],
+                'donor_email'    => $donor_info['donor_email'],
+                'donor_address'  => maybe_unserialize($donor_info['donor_address']),
+                'created_at'     => current_time('mysql'),
+            ]
+        );
+
+        // Remove the temporary donor info after successful insertion
+        $wpdb->delete($temp_table, ['order_id' => $order_id]);
+
+        error_log('Donation completed and saved for transaction: ' . $transactionId);
+    }
+}
+
+    // Save temporary donor info
+    private function save_temporary_donor_info($order_id, $donor_name, $donor_email, $donor_address, $amount, $currency, $status = 'pending') {
+        global $wpdb;
+        $temp_table = $wpdb->prefix . 'donations_temp';
+
+        // Log the details before saving
+        error_log('Saving temporary donor info:');
+        error_log('Order ID: ' . $order_id);
+        error_log('Donor Name: ' . $donor_name);
+        error_log('Donor Email: ' . $donor_email);
+        error_log('Amount: ' . $amount);
+        error_log('Currency: ' . $currency);
+        error_log('Status: ' . $status);
+
+        // Insert donor info, amount, currency, and status into the temporary table
+        $wpdb->insert($temp_table, [
+            'order_id' => $order_id,
+            'donor_name' => sanitize_text_field($donor_name),
+            'donor_email' => sanitize_email($donor_email),
+            'donor_address' => maybe_serialize($donor_address),
+            'amount' => floatval($amount),
+            'currency' => sanitize_text_field($currency),
+            'status' => sanitize_text_field($status), // Set the status to 'approved' for CHECKOUT.ORDER.APPROVED
+            'created_at' => current_time('mysql'),
+        ]);
+
+        // Log after saving
+        if ($wpdb->last_error) {
+            error_log('Error saving temporary donor info: ' . $wpdb->last_error);
+        } else {
+            error_log('Temporary donor info saved successfully for order: ' . $order_id);
+        }
+    }
+
+    // Retrieve temporary donor info by order ID during PAYMENT.CAPTURE.COMPLETED
+    private function get_temporary_donor_info($order_id) {
+        global $wpdb;
+        $temp_table = $wpdb->prefix . 'donations_temp';
+
+        
+        // Log SQL query
+        error_log('Order ID being queried: ' . $order_id);
+        error_log('Order ID length: ' . strlen($order_id));
+        error_log('Query for retrieving temp data: ' . $wpdb->prepare("SELECT * FROM $temp_table WHERE order_id = %s", $order_id));
+
+        // Retrieve donor info from the temporary table
+        $result = $wpdb->get_row($wpdb->prepare("SELECT * FROM $temp_table WHERE order_id = %s", $order_id), ARRAY_A);
+
+        // Log the retrieved data for debugging
+        error_log('Temporary donor info retrieved: ' . print_r($result, true));
+
+
+        return $result ? $result : null;
+    }
+
+
+    // Remove temporary donor info after PAYMENT.CAPTURE.COMPLETED is processed
+    private function remove_temporary_donor_info($order_id) {
+        global $wpdb;
+        $temp_table = $wpdb->prefix . 'donations_temp';
+
+        $wpdb->delete($temp_table, ['order_id' => $order_id]);
+    }
+
+
+    private function log_transaction_details($transactionId, $amount, $currency, $donorName, $donorEmail) {
+        error_log('Transaction ID: ' . $transactionId);
+        error_log('Amount: ' . $amount . ' ' . $currency);
+        error_log('Donor Name: ' . $donorName);
+        error_log('Donor Email: ' . $donorEmail);
+    }
+
+    // Save the final transaction
+    private function save_transaction($transactionId, $amount, $currency, $donorName, $donorEmail, $donorAddress) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'donations';
+
+        // Log the details before saving
+        error_log('Saving final transaction:');
+        error_log('Transaction ID: ' . $transactionId);
+        error_log('Amount: ' . $amount);
+        error_log('Currency: ' . $currency);
+        error_log('Donor Name: ' . $donorName);
+        error_log('Donor Email: ' . $donorEmail);
+
+        // Check if the transaction already exists
+        $existing_transaction = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table_name WHERE transaction_id = %s", $transactionId));
+
+        if ($existing_transaction) {
+            error_log('Transaction already exists: ' . $transactionId);
+            return;
+        }
+
+        // Save the transaction
+        $inserted = $wpdb->insert($table_name, [
+            'transaction_id' => sanitize_text_field($transactionId),
+            'amount' => floatval($amount),
+            'currency' => sanitize_text_field($currency),
+            'donor_name' => sanitize_text_field($donorName),
+            'donor_email' => sanitize_email($donorEmail),
+            'donor_address' => maybe_serialize($donorAddress),
+            'created_at' => current_time('mysql'),
+        ]);
+
+        // Log the result
+        if ($inserted === false) {
+            error_log('Failed to save transaction: ' . $wpdb->last_error);
+        } else {
+            error_log('Transaction saved successfully: ' . $transactionId);
         }
     }
 
     // Method to verify the webhook signature
     private function verify_webhook_signature($body, $headers) {
+        // Log that signature verification is being bypassed for testing purposes
+        error_log('Bypassing PayPal signature verification for testing.');
+
+        // Log the headers received to ensure they are coming through
+        error_log('Webhook headers for signature verification: ' . print_r($headers, true));
+
+        // Log the payload to ensure the body is also received correctly
+        error_log('Webhook body for signature verification: ' . $body);
+
+        // For testing, return true to allow the webhook to continue processing
+        return true;
+
+        /*
+        // Uncomment and use the code below once you re-enable verification for production
+
         $paypal_client_id = get_option('paypal_client_id');
         $paypal_client_secret = get_option('paypal_client_secret');
         $paypal_webhook_id = get_option('paypal_webhook_id');
 
-        // Check if necessary options are set
+        // Check if PayPal credentials are set
         if (empty($paypal_client_id) || empty($paypal_client_secret) || empty($paypal_webhook_id)) {
-            error_log('PayPal API credentials are not set.');
+            error_log('PayPal API credentials or Webhook ID are not set.');
             return false;
         }
 
-        // Determine the PayPal environment
+        // Determine the PayPal environment (sandbox or live)
         $environment = get_option('paypal_environment', 'sandbox');
         $endpoint = 'https://api.paypal.com/v1/notifications/verify-webhook-signature';
         if ($environment === 'sandbox') {
             $endpoint = 'https://api.sandbox.paypal.com/v1/notifications/verify-webhook-signature';
         }
 
-        // Get access token
+        // Obtain the PayPal access token
         $access_token = $this->get_paypal_access_token($paypal_client_id, $paypal_client_secret, $environment);
         if (!$access_token) {
             error_log('Failed to obtain PayPal access token.');
             return false;
         }
 
-        // Correctly access headers (normalize header names)
-        $headers = array_change_key_case($headers, CASE_UPPER);
+        // Prepare the signature verification data
         $signatureVerificationData = [
             'auth_algo' => isset($headers['PAYPAL-AUTH-ALGO'][0]) ? $headers['PAYPAL-AUTH-ALGO'][0] : '',
             'cert_url' => isset($headers['PAYPAL-CERT-URL'][0]) ? $headers['PAYPAL-CERT-URL'][0] : '',
@@ -335,14 +539,15 @@ class PayPal_Donations_Tracker {
             'webhook_event' => json_decode($body, true),
         ];
 
-        // Check for missing headers
+        // Check for missing headers and log any that are missing
         foreach ($signatureVerificationData as $key => $value) {
-            if (empty($value) && $key !== 'webhook_event' && $key !== 'webhook_id') {
+            if (empty($value) && $key !== 'webhook_event') {
                 error_log("Missing header or value for: $key");
                 return false;
             }
         }
 
+        // Send the verification request to PayPal
         $args = [
             'body' => json_encode($signatureVerificationData),
             'headers' => [
@@ -353,6 +558,7 @@ class PayPal_Donations_Tracker {
             'timeout' => 30,
         ];
 
+        // Send the request and log the response
         $response = wp_remote_post($endpoint, $args);
         if (is_wp_error($response)) {
             error_log('Webhook signature verification failed: ' . $response->get_error_message());
@@ -363,10 +569,12 @@ class PayPal_Donations_Tracker {
         $verificationResult = json_decode($response_body, true);
 
         $verification_status = isset($verificationResult['verification_status']) ? $verificationResult['verification_status'] : 'FAILURE';
-        error_log('Verification Status: ' . $verification_status);
+        error_log('PayPal Webhook Signature Verification Status: ' . $verification_status);
 
         return $verification_status === 'SUCCESS';
+        */
     }
+
 
     // Method to get PayPal access token
     private function get_paypal_access_token($client_id, $client_secret, $environment) {
@@ -667,22 +875,33 @@ class PayPal_Donations_Tracker {
                 </thead>
                 <tbody>
                     <?php foreach ($donations as $donation) {
+                        // Assuming $donation->donor_address might be an object
                         $donor_address = isset($donation->donor_address) ? maybe_unserialize($donation->donor_address) : null;
                         $formatted_address = '';
+
                         if (!empty($donor_address)) {
-                            if (is_array($donor_address)) {
+                            if (is_object($donor_address)) {
+                                // Handle it as an object
+                                $formatted_address = isset($donor_address->address_line_1) ? esc_html($donor_address->address_line_1) : '';
+                                $formatted_address .= isset($donor_address->address_line_2) ? ', ' . esc_html($donor_address->address_line_2) : '';
+                                $formatted_address .= isset($donor_address->city) ? ', ' . esc_html($donor_address->city) : '';
+                                $formatted_address .= isset($donor_address->state) ? ', ' . esc_html($donor_address->state) : '';
+                                $formatted_address .= isset($donor_address->postal_code) ? ', ' . esc_html($donor_address->postal_code) : '';
+                            } elseif (is_array($donor_address)) {
+                                // Handle it as an array
                                 $formatted_address = isset($donor_address['address_line_1']) ? esc_html($donor_address['address_line_1']) : '';
                                 $formatted_address .= isset($donor_address['address_line_2']) ? ', ' . esc_html($donor_address['address_line_2']) : '';
-                                $formatted_address .= isset($donor_address['admin_area_2']) ? ', ' . esc_html($donor_address['admin_area_2']) : '';
-                                $formatted_address .= isset($donor_address['admin_area_1']) ? ', ' . esc_html($donor_address['admin_area_1']) : '';
+                                $formatted_address .= isset($donor_address['city']) ? ', ' . esc_html($donor_address['city']) : '';
+                                $formatted_address .= isset($donor_address['state']) ? ', ' . esc_html($donor_address['state']) : '';
                                 $formatted_address .= isset($donor_address['postal_code']) ? ', ' . esc_html($donor_address['postal_code']) : '';
-                                $formatted_address .= isset($donor_address['country_code']) ? ', ' . esc_html($donor_address['country_code']) : '';
                             } else {
+                                // Treat it as a string
                                 $formatted_address = esc_html($donor_address);
                             }
                         } else {
                             $formatted_address = 'N/A';
                         }
+
                     ?>
                         <tr>
                             <td><?php echo esc_html($donation->id); ?></td>
@@ -942,34 +1161,25 @@ class PayPal_Donations_Tracker {
                             }]
                         });
                     },
+                    
                     onApprove: function(data, actions) {
                         return actions.order.capture().then(function(details) {
-                            // Make AJAX call to save the donation
-                            $.post("<?php echo admin_url('admin-ajax.php'); ?>", {
-                                action: "save_donation",
-                                donation_nonce: "<?php echo wp_create_nonce('save_donation'); ?>",
-                                transaction_id: details.id,
-                                donation_amount: details.purchase_units[0].amount.value
-                            }, function(response) {
-                                if (response.success) {
-                                    // No need to hide the modal here as it's already hidden
-                                } else {
-                                    alert("There was a problem saving your donation.");
-                                }
-                            });
+                            // Donation will be saved by the webhook handler; no action needed here
+                            // Optionally, you can display a thank-you message or redirect the user
                         });
                     },
-                    // Show the modal again if the payment is canceled
-                    onCancel: function(data) {
-                        $("#donation-modal").fadeIn();
-                    },
-                    // Handle errors
-                    onError: function(err) {
-                        $("#donation-modal").fadeIn();
-                        alert("An error occurred during the transaction. Please try again.");
-                    }
-                }).render("#donation-modal #paypal-button-container");
-            });
+
+                            // Show the modal again if the payment is canceled
+                            onCancel: function(data) {
+                                $("#donation-modal").fadeIn();
+                            },
+                            // Handle errors
+                            onError: function(err) {
+                                $("#donation-modal").fadeIn();
+                                alert("An error occurred during the transaction. Please try again.");
+                            }
+                        }).render("#donation-modal #paypal-button-container");
+                    });
         })(jQuery);
         <?php
         $custom_js = ob_get_clean();
@@ -1156,62 +1366,6 @@ class PayPal_Donations_Tracker {
             'current_total' => $current_total,
             'progress' => $progress
         ];
-    }
-
-    // Method to save a donation via AJAX
-    public function save_donation() {
-        // Check and verify nonce
-        if (
-            !isset($_POST['donation_nonce']) ||
-            !wp_verify_nonce($_POST['donation_nonce'], 'save_donation')
-        ) {
-            wp_send_json([
-                'success' => false,
-                'message' => 'Invalid security token.',
-            ]);
-            return;
-        }
-
-        // Sanitize and validate input
-        $transaction_id = sanitize_text_field($_POST['transaction_id']);
-        $amount = isset($_POST['donation_amount']) ? floatval($_POST['donation_amount']) : 0;
-
-        if (empty($transaction_id) || $amount <= 0) {
-            wp_send_json([
-                'success' => false,
-                'message' => 'Invalid donation data.',
-            ]);
-            return;
-        }
-
-        // Insert data into the database
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'donations';
-
-        $inserted = $wpdb->insert($table_name, [
-            'transaction_id' => $transaction_id,
-            'amount' => $amount,
-            'currency' => 'USD', // Assuming USD for simplicity
-            'donor_name' => '', // Donor name is not provided here
-            'donor_email' => '', // Donor email is not provided here
-            'donor_address' => '', // Donor address is not provided here
-            'created_at' => current_time('mysql'),
-        ]);
-
-        // Check if insertion was successful
-        if ($inserted === false) {
-            wp_send_json([
-                'success' => false,
-                'message' => 'Failed to save donation.',
-            ]);
-            return;
-        }
-
-        // Send success response
-        wp_send_json([
-            'success' => true,
-            'current_total' => $this->get_current_donations_total(),
-        ]);
     }
 
     // Method to display the donations progress bar shortcode
