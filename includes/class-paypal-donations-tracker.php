@@ -24,56 +24,86 @@ class PayPal_Donations_Tracker {
     }
 
     // Method to run on plugin activation
-public static function activate() {
-    global $wpdb;
-    $donations_table = $wpdb->prefix . 'donations';
-    $temporary_table = $wpdb->prefix . 'donations_temp';
-    $charset_collate = $wpdb->get_charset_collate();
+    public static function activate() {
+        global $wpdb;
+        $donations_table = $wpdb->prefix . 'donations';
+        $temporary_table = $wpdb->prefix . 'donations_temp';
+        $charset_collate = $wpdb->get_charset_collate();
 
-    $installed_version = get_option('paypal_donations_tracker_db_version');
-    $current_version = '1.4'; // Updated version
+        // Logging function
+        if (!function_exists('write_log')) {
+            function write_log($log) {
+                if (true === WP_DEBUG) {
+                    if (is_array($log) || is_object($log)) {
+                        error_log(print_r($log, true));
+                    } else {
+                        error_log($log);
+                    }
+                }
+            }
+        }
 
-    // Create the main donations table
-    $donations_sql = "CREATE TABLE IF NOT EXISTS $donations_table (
-        id mediumint(9) NOT NULL AUTO_INCREMENT,
-        transaction_id varchar(255) NOT NULL,
-        amount decimal(10, 2) NOT NULL,
-        currency varchar(10) NOT NULL,
-        donor_name varchar(255) NOT NULL,
-        donor_email varchar(255) NOT NULL,
-        donor_address text,
-        created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
-        PRIMARY KEY  (id)
-    ) $charset_collate;";
+        write_log('Activating PayPal Donations Tracker plugin...');
+        write_log('Creating or updating database tables.');
 
-    $wpdb->query($donations_sql);
+        // Create or update the main donations table
+        $donations_sql = "CREATE TABLE $donations_table (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            transaction_id varchar(255) NOT NULL UNIQUE,
+            amount decimal(10, 2) NOT NULL,
+            currency varchar(10) NOT NULL,
+            donor_name varchar(255) NOT NULL,
+            donor_email varchar(255) NOT NULL,
+            donor_address text,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY  (id)
+        ) $charset_collate;";
 
-    // Create the temporary storage table with a 'transaction_id' column
-    $temp_sql = "CREATE TABLE IF NOT EXISTS $temporary_table (
-        id mediumint(9) NOT NULL AUTO_INCREMENT,
-        order_id varchar(255) NOT NULL,
-        transaction_id varchar(255),
-        donor_name varchar(255),
-        donor_email varchar(255),
-        donor_address text,
-        amount decimal(10, 2),
-        currency varchar(10),
-        status varchar(50) DEFAULT 'pending',  
-        created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
-        PRIMARY KEY (id)
-    ) $charset_collate;";
+        // Create or update the temporary storage table
+        $temp_sql = "CREATE TABLE $temporary_table (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            order_id varchar(255) NOT NULL UNIQUE,
+            donor_name varchar(255),
+            donor_email varchar(255),
+            donor_address text,
+            amount decimal(10, 2),
+            currency varchar(10),
+            status varchar(50) DEFAULT 'pending',
+            capture_data text,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id)
+        ) $charset_collate;";
 
-    $wpdb->query($temp_sql);
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
 
-    // Update the version number of the database schema
-    update_option('paypal_donations_tracker_db_version', $current_version);
+        // Attempt to create or update the donations table
+        $donations_result = dbDelta($donations_sql);
+        write_log('Donations table creation result:');
+        write_log($donations_result);
 
-    // Flush rewrite rules to apply the new table structure
-    flush_rewrite_rules();
-}
+        // Attempt to create or update the temporary table
+        $temp_result = dbDelta($temp_sql);
+        write_log('Temporary donations table creation result:');
+        write_log($temp_result);
 
+        // Check if tables exist
+        if ($wpdb->get_var("SHOW TABLES LIKE '$donations_table'") != $donations_table) {
+            write_log("Error: Donations table '$donations_table' not found after activation.");
+        } else {
+            write_log("Success: Donations table '$donations_table' exists.");
+        }
 
+        if ($wpdb->get_var("SHOW TABLES LIKE '$temporary_table'") != $temporary_table) {
+            write_log("Error: Temporary table '$temporary_table' not found after activation.");
+        } else {
+            write_log("Success: Temporary table '$temporary_table' exists.");
+        }
 
+        // Update the version number of the database schema
+        $current_version = '1.5'; // Incremented version
+        update_option('paypal_donations_tracker_db_version', $current_version);
+        write_log("Database version updated to $current_version.");
+    }
 
     // Method to run on plugin deactivation
     public static function deactivate() {
@@ -275,105 +305,101 @@ public static function activate() {
 }
 
     // Method to handle webhook event
-private function handle_webhook_event($event_type, $resource) {
-    global $wpdb;
-    $temp_table = $wpdb->prefix . 'donations_temp';  // Temporary table for storing data
-    $donations_table = $wpdb->prefix . 'donations';  // Final donations table
+    private function handle_webhook_event($event_type, $resource) {
+        global $wpdb;
+        $temp_table = $wpdb->prefix . 'donations_temp';  // Temporary table for storing data
+        $donations_table = $wpdb->prefix . 'donations';  // Final donations table
 
-    // Handle CHECKOUT.ORDER.APPROVED event (save donor details and amount, but do not mark as completed)
-    if ($event_type === 'CHECKOUT.ORDER.APPROVED') {
-        $order_id = $resource->id;
+        // Handle CHECKOUT.ORDER.APPROVED event
+        if ($event_type === 'CHECKOUT.ORDER.APPROVED') {
+            $order_id = $resource->id;
 
-        // Extract donor details from the event
-        $payer = $resource->payer ?? null;
-        $donorName = 'N/A';
-        $donorEmail = 'N/A';
-        $donorAddress = [];
+            // Extract donor details from the event
+            $payer = $resource->payer ?? null;
+            $donorName = 'N/A';
+            $donorEmail = 'N/A';
+            $donorAddress = '';
 
-        if ($payer) {
-            $donorName = isset($payer->name->given_name) && isset($payer->name->surname) ? $payer->name->given_name . ' ' . $payer->name->surname : 'N/A';
-            $donorEmail = $payer->email_address ?? 'N/A';
-            $donorAddress = serialize([
-                'address_line_1' => $resource->purchase_units[0]->shipping->address->address_line_1 ?? '',
-                'admin_area_2'   => $resource->purchase_units[0]->shipping->address->admin_area_2 ?? '',
-                'admin_area_1'   => $resource->purchase_units[0]->shipping->address->admin_area_1 ?? '',
-                'postal_code'    => $resource->purchase_units[0]->shipping->address->postal_code ?? '',
-                'country_code'   => $resource->purchase_units[0]->shipping->address->country_code ?? '',
-            ]);
+            if ($payer) {
+                $donorName = isset($payer->name->given_name) && isset($payer->name->surname)
+                    ? $payer->name->given_name . ' ' . $payer->name->surname
+                    : 'N/A';
+                $donorEmail = $payer->email_address ?? 'N/A';
+                $donorAddressArray = [
+                    'address_line_1' => $resource->purchase_units[0]->shipping->address->address_line_1 ?? '',
+                    'admin_area_2'   => $resource->purchase_units[0]->shipping->address->admin_area_2 ?? '',
+                    'admin_area_1'   => $resource->purchase_units[0]->shipping->address->admin_area_1 ?? '',
+                    'postal_code'    => $resource->purchase_units[0]->shipping->address->postal_code ?? '',
+                    'country_code'   => $resource->purchase_units[0]->shipping->address->country_code ?? '',
+                ];
+                $donorAddress = serialize($donorAddressArray);
+            }
+
+            // Extract the amount and currency from the event
+            $amount = $resource->purchase_units[0]->amount->value ?? 0;
+            $currency = $resource->purchase_units[0]->amount->currency_code ?? 'USD';
+
+            // Insert or update the donor details into the temporary table
+            $wpdb->replace(
+                $temp_table,
+                [
+                    'order_id'      => $order_id,
+                    'donor_name'    => $donorName,
+                    'donor_email'   => $donorEmail,
+                    'donor_address' => $donorAddress,
+                    'amount'        => $amount,
+                    'currency'      => $currency,
+                    'status'        => 'pending',
+                    'created_at'    => current_time('mysql'),
+                ]
+            );
+
+            error_log('Donor details and amount saved temporarily for order: ' . $order_id);
+
+            // Check if capture data is already saved for this order
+            $temp_data = $wpdb->get_row(
+                $wpdb->prepare("SELECT * FROM $temp_table WHERE order_id = %s", $order_id),
+                ARRAY_A
+            );
+
+            if (!empty($temp_data['capture_data'])) {
+                // Unserialize the capture data
+                $capture_resource = maybe_unserialize($temp_data['capture_data']);
+
+                // Proceed to process the donation
+                $this->process_donation($temp_data, $capture_resource);
+            }
         }
 
-        // Extract the amount and currency from the event
-        $amount = $resource->purchase_units[0]->amount->value ?? 0;
-        $currency = $resource->purchase_units[0]->amount->currency_code ?? 'USD';
+        // Handle PAYMENT.CAPTURE.COMPLETED event
+        if ($event_type === 'PAYMENT.CAPTURE.COMPLETED') {
+            $order_id = $resource->supplementary_data->related_ids->order_id;
 
-        // Insert or update the donor details, amount, and currency into the temporary table
-        $wpdb->insert(
-            $temp_table,
-            [
-                'order_id'     => $order_id,
-                'donor_name'   => $donorName,
-                'donor_email'  => $donorEmail,
-                'donor_address'=> $donorAddress,
-                'amount'       => $amount,
-                'currency'     => $currency,
-                'status'       => 'pending',
-                'created_at'   => current_time('mysql'),
-            ]
-        );
+            // Fetch the donor info from the temporary table
+            $donor_info = $wpdb->get_row(
+                $wpdb->prepare("SELECT * FROM $temp_table WHERE order_id = %s", $order_id),
+                ARRAY_A
+            );
 
-        error_log('Donor details and amount saved temporarily for order: ' . $order_id);
+            if (!$donor_info) {
+                // Save the capture data temporarily using order_id as the key
+                $wpdb->replace(
+                    $temp_table,
+                    [
+                        'order_id'     => $order_id,
+                        'capture_data' => maybe_serialize($resource),
+                        'status'       => 'pending_capture',
+                        'created_at'   => current_time('mysql'),
+                    ]
+                );
+                error_log('Capture data saved temporarily for order: ' . $order_id);
+                return;
+            }
+
+            // Proceed to process the donation
+            $this->process_donation($donor_info, $resource);
+        }
     }
-
-    // Handle PAYMENT.CAPTURE.COMPLETED event
-    if ($event_type === 'PAYMENT.CAPTURE.COMPLETED') {
-        $order_id = $resource->supplementary_data->related_ids->order_id;
-
-        // Fetch the donor info from the temporary table
-        $donor_info = $wpdb->get_row(
-            $wpdb->prepare("SELECT * FROM $temp_table WHERE order_id = %s", $order_id),
-            ARRAY_A
-        );
-
-        if (!$donor_info) {
-            error_log('Temporary donor info not found for order: ' . $order_id);
-            return;
-        }
-
-        // Extract the transaction details from the capture
-        $transactionId = $resource->id;
-
-        // Before inserting, check if the transaction ID already exists
-        $existing = $wpdb->get_var(
-            $wpdb->prepare("SELECT COUNT(*) FROM $donations_table WHERE transaction_id = %s", $transactionId)
-        );
-
-        if ($existing) {
-            error_log('Donation already recorded for transaction ID: ' . $transactionId);
-            // Optionally, delete the temporary record if it's no longer needed
-            $wpdb->delete($temp_table, ['order_id' => $order_id]);
-            return;
-        }
-
-        // Insert the final transaction into the donations table
-        $wpdb->insert(
-            $donations_table,
-            [
-                'transaction_id' => $transactionId,
-                'amount'         => $donor_info['amount'],
-                'currency'       => $donor_info['currency'],
-                'donor_name'     => $donor_info['donor_name'],
-                'donor_email'    => $donor_info['donor_email'],
-                'donor_address'  => maybe_unserialize($donor_info['donor_address']),
-                'created_at'     => current_time('mysql'),
-            ]
-        );
-
-        // Remove the temporary donor info after successful insertion
-        $wpdb->delete($temp_table, ['order_id' => $order_id]);
-
-        error_log('Donation completed and saved for transaction: ' . $transactionId);
-    }
-}
 
     // Save temporary donor info
     private function save_temporary_donor_info($order_id, $donor_name, $donor_email, $donor_address, $amount, $currency, $status = 'pending') {
@@ -486,6 +512,51 @@ private function handle_webhook_event($event_type, $resource) {
             error_log('Transaction saved successfully: ' . $transactionId);
         }
     }
+
+    // Method to process the donation and save it to the donations table
+    private function process_donation($donor_info, $resource) {
+        global $wpdb;
+        $donations_table = $wpdb->prefix . 'donations';
+        $temp_table = $wpdb->prefix . 'donations_temp';
+
+        $transaction_id = $resource->id;
+
+        // Check if the donation already exists in the donations table
+        $existing = $wpdb->get_var(
+            $wpdb->prepare("SELECT COUNT(*) FROM $donations_table WHERE transaction_id = %s", $transaction_id)
+        );
+
+        if ($existing) {
+            error_log('Donation already recorded for transaction ID: ' . $transaction_id);
+            // Remove the temporary donor info
+            $wpdb->delete($temp_table, ['order_id' => $donor_info['order_id']]);
+            return;
+        }
+
+        // Insert the final transaction into the donations table
+        $wpdb->insert(
+            $donations_table,
+            [
+                'transaction_id' => $transaction_id,
+                'amount'         => $donor_info['amount'],
+                'currency'       => $donor_info['currency'],
+                'donor_name'     => $donor_info['donor_name'],
+                'donor_email'    => $donor_info['donor_email'],
+                'donor_address'  => $donor_info['donor_address'],
+                'created_at'     => current_time('mysql'),
+            ]
+        );
+
+        if ($wpdb->last_error) {
+            error_log('Error inserting donation: ' . $wpdb->last_error);
+        } else {
+            error_log('Donation completed and saved for transaction: ' . $transaction_id);
+        }
+
+        // Remove the temporary donor info
+        $wpdb->delete($temp_table, ['order_id' => $donor_info['order_id']]);
+    }
+
 
     // Method to verify the webhook signature
     private function verify_webhook_signature($body, $headers) {
@@ -834,6 +905,11 @@ private function handle_webhook_event($event_type, $resource) {
         $donations_count = $this->get_total_donations_count();
         $percentage_of_goal = $goal > 0 ? ($total_collected / $goal) * 100 : 0;
 
+        // Format numbers for display
+        $formatted_total_collected = number_format($total_collected, 2);
+        $formatted_percentage_of_goal = number_format($percentage_of_goal, 2);
+        $formatted_donations_count = number_format($donations_count);
+
         // Fetching the donations list
         $donations = $wpdb->get_results("SELECT * FROM $table_name ORDER BY created_at DESC");
 
@@ -843,19 +919,21 @@ private function handle_webhook_event($event_type, $resource) {
 
             <!-- Metrics Dashboard -->
             <div class="donations-dashboard">
+                <!-- Total Amount Collected -->
                 <div class="donations-metrics-card">
-                    <div class="donations-metric-value"><?php echo '$' . number_format($total_collected, 2); ?></div>
+                    <div class="donations-metric-value">$<?php echo $formatted_total_collected; ?> USD</div>
                     <div class="donations-metric-label">Total Recaudado</div>
                 </div>
+
+                <!-- Percentage of Goal Achieved -->
                 <div class="donations-metrics-card">
-                    <div class="donations-metric-value"><?php echo number_format($percentage_of_goal, 2) . '%'; ?></div>
-                    <div class="donations-metric-label">Meta Alcanzada</div>
-                    <div class="donations-progress">
-                        <div class="donations-progress-bar" style="width: <?php echo $percentage_of_goal; ?>%;"></div>
-                    </div>
+                    <div class="donations-metric-value"><?php echo $formatted_percentage_of_goal; ?>%</div>
+                    <div class="donations-metric-label">Porcentaje de la Meta</div>
                 </div>
+
+                <!-- Number of Donations -->
                 <div class="donations-metrics-card">
-                    <div class="donations-metric-value"><?php echo intval($donations_count); ?></div>
+                    <div class="donations-metric-value"><?php echo $formatted_donations_count; ?></div>
                     <div class="donations-metric-label">Número de Donaciones</div>
                 </div>
             </div>
@@ -875,29 +953,17 @@ private function handle_webhook_event($event_type, $resource) {
                 </thead>
                 <tbody>
                     <?php foreach ($donations as $donation) {
-                        // Assuming $donation->donor_address might be an object
+                        // Unserialize the donor address
                         $donor_address = isset($donation->donor_address) ? maybe_unserialize($donation->donor_address) : null;
                         $formatted_address = '';
 
-                        if (!empty($donor_address)) {
-                            if (is_object($donor_address)) {
-                                // Handle it as an object
-                                $formatted_address = isset($donor_address->address_line_1) ? esc_html($donor_address->address_line_1) : '';
-                                $formatted_address .= isset($donor_address->address_line_2) ? ', ' . esc_html($donor_address->address_line_2) : '';
-                                $formatted_address .= isset($donor_address->city) ? ', ' . esc_html($donor_address->city) : '';
-                                $formatted_address .= isset($donor_address->state) ? ', ' . esc_html($donor_address->state) : '';
-                                $formatted_address .= isset($donor_address->postal_code) ? ', ' . esc_html($donor_address->postal_code) : '';
-                            } elseif (is_array($donor_address)) {
-                                // Handle it as an array
-                                $formatted_address = isset($donor_address['address_line_1']) ? esc_html($donor_address['address_line_1']) : '';
-                                $formatted_address .= isset($donor_address['address_line_2']) ? ', ' . esc_html($donor_address['address_line_2']) : '';
-                                $formatted_address .= isset($donor_address['city']) ? ', ' . esc_html($donor_address['city']) : '';
-                                $formatted_address .= isset($donor_address['state']) ? ', ' . esc_html($donor_address['state']) : '';
-                                $formatted_address .= isset($donor_address['postal_code']) ? ', ' . esc_html($donor_address['postal_code']) : '';
-                            } else {
-                                // Treat it as a string
-                                $formatted_address = esc_html($donor_address);
-                            }
+                        if (!empty($donor_address) && is_array($donor_address)) {
+                            // Build the formatted address
+                            $formatted_address = isset($donor_address['address_line_1']) ? esc_html($donor_address['address_line_1']) : '';
+                            $formatted_address .= isset($donor_address['admin_area_2']) ? ', ' . esc_html($donor_address['admin_area_2']) : '';
+                            $formatted_address .= isset($donor_address['admin_area_1']) ? ', ' . esc_html($donor_address['admin_area_1']) : '';
+                            $formatted_address .= isset($donor_address['postal_code']) ? ', ' . esc_html($donor_address['postal_code']) : '';
+                            $formatted_address .= isset($donor_address['country_code']) ? ', ' . esc_html($donor_address['country_code']) : '';
                         } else {
                             $formatted_address = 'N/A';
                         }
@@ -916,6 +982,7 @@ private function handle_webhook_event($event_type, $resource) {
                 </tbody>
             </table>
         </div>
+
         <style>
             /* Scoped styles for donations list page */
             .donations-dashboard {
@@ -923,6 +990,7 @@ private function handle_webhook_event($event_type, $resource) {
                 justify-content: space-between;
                 margin-bottom: 30px;
                 margin-top: 20px;
+                flex-wrap: wrap; /* Add this to wrap cards on smaller screens */
             }
 
             .donations-metrics-card {
@@ -932,7 +1000,8 @@ private function handle_webhook_event($event_type, $resource) {
                 padding: 20px;
                 text-align: center;
                 flex: 1;
-                margin: 0 10px;
+                margin: 10px;
+                min-width: 200px; /* Ensure cards don't get too narrow */
             }
 
             .donations-metric-value {
@@ -947,35 +1016,28 @@ private function handle_webhook_event($event_type, $resource) {
                 margin-top: 10px;
             }
 
-            .donations-progress {
-                margin-top: 15px;
-                background-color: #e9ecef;
-                border-radius: 8px;
-                overflow: hidden;
-                height: 10px;
-                width: 100%;
-            }
-
-            .donations-progress-bar {
-                height: 100%;
-                background-color: #28a745;
-                transition: width 0.4s ease;
-            }
-
             .donations-module-table {
                 border: 1px solid #e9ecef;
                 border-radius: 8px;
                 width: 100%;
                 margin-top: 20px;
+                border-collapse: collapse;
             }
 
             .donations-module-table th,
             .donations-module-table td {
                 border: 1px solid #e9ecef;
+                padding: 8px;
+                text-align: left;
+            }
+
+            .donations-module-table th {
+                background-color: #f1f1f1;
             }
         </style>
         <?php
     }
+
 
     // Method to enqueue frontend styles
     public function enqueue_frontend_styles() {
